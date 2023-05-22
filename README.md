@@ -17,3 +17,10 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
 - [Norman Matloff's Unix and Linux Tutorial Center](https://heather.cs.ucdavis.edu/~matloff/unix.html)
 
 ## Projects list
+
+### Data lab
+*About*: bit-level operation
+*File*: [bits.c](https://github.com/ouyangyuchen/csapp15-213/blob/master/datalab-handout/bits.c)
+*Tricky Parts*:
+1. `int howManyBits(int x)`: return the minimum number of bits required to represent x in two's complement.
+    - key: remove redundant sign bits at head, find the first appearance position of 1, **binary search + conditional shift**
