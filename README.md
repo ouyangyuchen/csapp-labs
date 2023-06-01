@@ -26,6 +26,7 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
     - key: remove redundant sign bits at head, find the first appearance position of 1, **binary search + conditional shift**
 
 </details>
+
 ### Bomb lab
 > Understand programs in the machine-level.
 
