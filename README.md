@@ -32,12 +32,14 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
 
 `./bomb/strs` *is my answer*
 
-phase 1-4
+<details><summary>phase 1-4</summary>
+
 1. be familiar with gdb commands
 2. if-else, while loop
 3. switch, jump-table
 4. recursive function, shift
 
+  </details>
 <details> <summary>phase 5</summary>
 
 1. check the length of input string.
@@ -101,10 +103,9 @@ for (int i = 5; i > 0; i--) {
 ### Attack lab
 > Be careful about buffer overflow with rough memory writing.
 
-#### Part 1: Code Injection Attacks
-input string = commands in bytes code + filled bytes + address of the commands
+<details><summary>Part 1: Code Injection Attacks</summary>
 
-<details><summary> commands </summary>
+input string = commands in bytes code + filled bytes + address of the commands
 
 |level   |commands   |
 |---|---|
@@ -113,12 +114,11 @@ input string = commands in bytes code + filled bytes + address of the commands
 
 </details>
 
-#### Part 2: Return-Oriented Programming
+<details> <summary>Part 2: Return-Oriented Programming</summary>
+
 The stack has uncertain address and is non-executable. Therefore, we are unable to overwrite the address of command string.
 However, the address of text/code is fixed. We can look into the machine code representation of functions, and extract valid parts of commands before return.
-
-<details><summary> level 2 </summary>
-
+- level 2
 1. notice that in the machine code of `getval_280()`, we can retrieve the value from stack to `%rax`.
 ```
 00000000004019ca <getval_280>:
@@ -153,12 +153,9 @@ addr_getval_280 <-- original return address
 <-- %rsp
 ```
 where `addr_setval_426` and `addr_getval_280` are the corresbonding addresses of gadgets.
+- level 3
 
-</details>
-
-<details><summary> level 3 </summary>
-
-**key problem**: We cannot update %rsp by the given gadgets. In order to place the data upside the stack pointer, we need to calculate how many **pop** operations are required.
+*key problem*: We cannot update %rsp by the given gadgets. In order to place the data upside the stack pointer, we need to calculate how many pop operations are required to calculate the address of hex string.
 
 ```
 mov %rsp, %rax              addval_190
@@ -170,5 +167,6 @@ mov %ecx, %esi              addval_187
 leaq (%rdi,%rsi,1), %rax    add_xy
 mov %rax, %rdi              setval_426
 ```
+#pop operations = 8 (#instructions) + 1 (pop %rax) = 9.
 
 </details>
