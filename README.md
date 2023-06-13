@@ -216,7 +216,7 @@ while ((opt = getopt(argc, argv, "hvs:E:b:t:")) != -1) {
 
 <details><summary>Part B: Optimizing Matrix Transpose</summary>
 
-cache: $ s = 5, E = 1, b = 5$
+cache: $s = 5, E = 1, b = 5$
 32 bytes per line = 8 ints per line
 capacity $C = 1024$ bytes = 256 ints
 
