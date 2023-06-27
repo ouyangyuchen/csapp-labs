@@ -173,22 +173,21 @@ void eval(char *cmdline) {
     if (argv[0] == NULL) return;        // empty line, only spaces
     
     if (!builtin_cmd(argv)) {
-        /* create the new process */
+        // ensure the addjobs happen before entering the sigchld handler
         sigemptyset(&mask);
-        sigaddset(&mask, SIGCHLD);    /* block the SIGCHLD signal */
+        sigaddset(&mask, SIGCHLD);    // block the SIGCHLD signal
         sigprocmask(SIG_SETMASK, &mask, &prev);
         
         if ((pid = fork()) == 0) {
-            setpgid(0, 0);     /* group id == pid */
+            setpgid(0, 0);     // set group id = pid
             sigprocmask(SIG_SETMASK, &prev, NULL);
-            /* create a new process */
+            // create a new process
             if (execve(argv[0], argv, environ) < 0) {
                 printf("%s: Command not found\n", argv[0]);
-                exit(1);
+                exit(1);        // exit the child process if execve error, STUCK HERE!
             }
         }
         else {
-            /* background job or foreground job ? */
             if (!bg) {
                 addjob(jobs, pid, FG, cmdline); 
             }
@@ -196,8 +195,8 @@ void eval(char *cmdline) {
                 addjob(jobs, pid, BG, cmdline);
                 printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
             }
-            sigprocmask(SIG_SETMASK, &prev, NULL);  /* unblock SIGCHLD signal */
-            /* wait foreground job to finish */
+            sigprocmask(SIG_SETMASK, &prev, NULL);  // unblock SIGCHLD signal
+            // wait foreground job to finish
             if (!bg)
                 waitfg(pid);
         }
@@ -271,6 +270,7 @@ int builtin_cmd(char **argv) {
         exit(0);
     }
     else if (strcmp(cmd, "jobs") == 0) {
+        // safely list all jobs
         sigprocmask(SIG_SETMASK, &mask, &prev);
         listjobs(jobs);
         sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -327,19 +327,20 @@ void do_bgfg(char **argv) {
         return;
     }
 
-    pid_t pid = target->pid;   /* the actual pid */
+    pid_t pid = target->pid;   // the actual pid
     int jid = target->jid;
 
-    // if not stopped nor background, just return 
     sigprocmask(SIG_SETMASK, &mask, &prev);
     if (bg && target->state == ST) {
+        // background a job that has been stopped
         kill(-pid, SIGCONT);
         target->state = BG;
         printf("[%d] (%d) %s", jid, pid, target->cmdline);
         sigprocmask(SIG_SETMASK, &prev, NULL);
     }
     else if (target->state == ST || target->state == BG) {
-        kill(-pid, SIGCONT);
+        // foreground a job that has been stopped or is running background
+        kill(-pid, SIGCONT);    // only work is stopped, no effect with background job
         target->state = FG;
         sigprocmask(SIG_SETMASK, &prev, NULL);
         waitfg(pid);    // wait the foreground job to terminate
@@ -354,11 +355,13 @@ void do_bgfg(char **argv) {
  */
 void waitfg(pid_t pid) { 
     sigset_t maskall, prev;
+
     // get pid of foreground job safely
     sigfillset(&maskall);
     sigprocmask(SIG_SETMASK, &maskall, &prev);
     struct job_t *fgjob = getjobpid(jobs, pid);
     sigprocmask(SIG_SETMASK, &prev, NULL);
+
     // wait until the fg job is reaped
     // terminate before getjobpid() -> fgjob = NULL
     // terminate after getjobpid() -> fgjob->pid == 0
@@ -383,17 +386,19 @@ void sigchld_handler(int sig) {
     pid_t pid;
     sigset_t mask, prev;
     int fg_status;
-    // reap all terminated children without waiting
+    // reap all terminated or stopped child processes without waiting
     while ((pid = waitpid(-1, &fg_status, WNOHANG | WUNTRACED)) > 0) {
         sigfillset(&mask);
         sigprocmask(SIG_SETMASK, &mask, &prev);
-        struct job_t *stp_job = getjobpid(jobs, pid);
+        struct job_t *stp_job = getjobpid(jobs, pid);   // the job pointer to the process
+
         if (stp_job == NULL) app_error("sigchld handler: terminated or stopped process not in jobs");
+
         if (WIFEXITED(fg_status) || WIFSIGNALED(fg_status)) {
             // the job is terminated -> safely delete the job
             if (WIFSIGNALED(fg_status))
                 printf("Job [%d] (%d) terminated by signal 2\n", stp_job->jid, pid);
-            deletejob(jobs, pid);
+            deletejob(jobs, pid);       // be careful about the order of these 2 lines!
         }
         else if (WIFSTOPPED(fg_status)) {
             // the job is stopped -> change the fg job state to STOP
