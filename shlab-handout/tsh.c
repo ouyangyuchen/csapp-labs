@@ -320,7 +320,10 @@ void do_bgfg(char **argv) {
 
     // if the job is not found, throw an error
     if (target == NULL) {
-        printf("(%d): No such %s\n", temp_id, (isjid)? "job" : "process");
+        if (isjid)
+            printf("%s: No such job\n", argv[1]);
+        else
+            printf("(%d): No such process\n", temp_id);
         return;
     }
 
