@@ -383,6 +383,7 @@ void waitfg(pid_t pid) {
  *     currently running children to terminate.
  */
 void sigchld_handler(int sig) { 
+    int old_errno = errno;
     pid_t pid;
     sigset_t mask, prev;
     int fg_status;
@@ -410,6 +411,7 @@ void sigchld_handler(int sig) {
         }
         sigprocmask(SIG_SETMASK, &prev, NULL);
     }
+    errno = old_errno;
     return;
 }
 
@@ -419,6 +421,7 @@ void sigchld_handler(int sig) {
  *    to the foreground job.
  */
 void sigint_handler(int sig) { 
+    int olderrno = errno;
     sigset_t mask, prev;
     sigfillset(&mask);
 
@@ -431,6 +434,7 @@ void sigint_handler(int sig) {
             unix_error("sigint: kill error\n");
     }
     sigprocmask(SIG_SETMASK, &prev, NULL);
+    errno = olderrno;
 }
 
 /*
@@ -439,6 +443,7 @@ void sigint_handler(int sig) {
  *     foreground job by sending it a SIGTSTP.
  */
 void sigtstp_handler(int sig) { 
+    int olderrno = errno;
     sigset_t mask, prev;
     sigfillset(&mask);
 
@@ -451,6 +456,7 @@ void sigtstp_handler(int sig) {
             unix_error("sigtstp: kill error\n");
     }
     sigprocmask(SIG_SETMASK, &prev, NULL);
+    errno = olderrno;
 }
 
 /*********************
