@@ -257,3 +257,49 @@ Because of 8 ints in a set of cache, it is not efficient enough to use just bloc
 *misses*: 1994 < 2000
 
 </details>
+
+### Shell lab
+> Understand exception control flow by building a tiny shell.
+
+A *shell* is an interactive command-line interpreter that runs programs on behalf of the user.
+A shell repeatedly prints a prompt, waits for a command line on stdin, and then carries out some action, as directed by the contents of the command line.
+The first word in the command line is either the name of a built-in command or the pathname of an executable file. The remaining words are command-line arguments.
+
+Here are the ideas on how to implement the functions and build a process management system:
+- `eval()` function:
+  1. parse the command line: break apart the whole line into pieces of arguments + decide fg or bg ?
+  2. call `builtin_cmd()`: do all things and return if true, otherwise passes control to the process management part.
+  3. process management part: now the input is an executable pathname, call `fork()` and `execve()` to create a child process.
+    - foreground: `eval()` returns after the child is terminated, then call `wait_fg()` to wait for it.
+    - background: no need to wait, continue the parent process.
+- `builtin_cmd()` function: **just like basic procedures, it is called inside the shell process**.
+  if the command is:
+  - "quit": just terminate the parent process (unreaped children will be handled by `init` process)
+  - "jobs": call `listjobs()` safely (temporarily block all signals to avoid corruption)
+  - "fg" or "bg": call `do_fgbg()`
+  - other: error case, throw an error by emitting a message to stdout.
+- `do_fgbg()` function: continue the specified process.
+  1. parse the second argument, determine the actual process/job it refers to.
+  2. three cases available: all send a `SIGCONT` signal first
+    - from `ST` to `FG`: state change in the jobs list + waiting
+    - from `BG` to `FG`: state change in the jobs list + waiting (the running process will neglect the `SIGCONT` signal by default)
+    - from `ST` to `BG`: only need to change the state
+- `sigchld_handler`: **the only way to reap the terminated or stopped child process**
+  The child process sends a `SIGCHLD` signal to parent if it has stopped or terminated. Here are 3 cases:
+  1. terminate normally (`WIFEXITED(status) == 1`)
+  2. terminated by receiving a `SIGINT` signal, either from other processes or `sigint_handler`
+  3. suspended by receiving a `SIGTSTP` signal, either from other processes or `sigtstp_handler`
+
+  **The handler need to change to the proper state or delete the job from list.** (ensure all `addjob()` are called before `deletejob()`, by blocking `SIGCHLD` signal just before `fork()`)
+  The option is `WNOHANG | WUNTRACED` to catch the pid of processes without waiting.
+- `wait_fg()`: The key is **`wait_fg` return after the fg process is reaped**
+  The foreground process is reaped in the `sigchld_handler`, so do we determine whether it has been reaped?
+  Claim: As long as the handler behaves correctly, the reaping activity is immediately followed by `deletejob()`. So when the job is no longer in jobs list, we can assume it has been reaped and then return.
+
+  ```c
+  struct job_t* target_job = getjobpid(jobs, fg_pid);   // block all signals temporarily
+  while (target_job && target_job->state == FG)
+      sleep(1);
+  ```
+  But we cannot determine the order of `sigchld_handler` and `wait_fg`, so the target job may be NULL (if handler comes first) or until `job.state != FG` (we get the job pointer first, but need to wait for the state change).
+- `sigint_handler` and `sigtstp_handler`: catch the `SIGINT` or `SIGTSTP` signal from keyboard (\<Ctrl-c\> or \<Ctrl-z\>), and **pass the corresponding signal to the fg process group**.
