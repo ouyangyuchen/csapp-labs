@@ -20,27 +20,25 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
 *Some notes for each lab.*
 ### Data lab
 > How to operate integers and floating points in the bit-level? 
-<details> <summary>howManyBits</summary>
+
+**howManyBits**
 
 - `int howManyBits(int x)`: return the minimum number of bits required to represent x in two's complement.
     - key: remove redundant sign bits at head, find the first appearance position of 1, **binary search + conditional shift**
-
-</details>
 
 ### Bomb lab
 > Understand programs in the machine-level.
 
 `./bomb/strs` *is my answer*
 
-<details><summary>phase 1-4</summary>
+**phase 1-4**
 
 1. be familiar with gdb commands
 2. if-else, while loop
 3. switch, jump-table
 4. recursive function, shift
 
-  </details>
-<details> <summary>phase 5</summary>
+**phase 5**
 
 1. check the length of input string.
 
@@ -56,9 +54,7 @@ for (int i = 0; i < 6; i++) {
 ```
 3. string match test
 
-</details>
-
-<details><summary> phase 6 </summary>
+**phase 6**
 
 1. input string to 6 numbers, which must be in [1, 6] and unique.
 2. number = 7 - number
@@ -98,12 +94,10 @@ for (int i = 5; i > 0; i--) {
 }
 ```
 
-</details>
-
 ### Attack lab
 > Be careful about buffer overflow with rough memory writing.
 
-<details><summary>Part 1: Code Injection Attacks</summary>
+#### Part 1: Code Injection Attacks
 
 input string = commands in bytes code + filled bytes + address of the commands
 
@@ -112,9 +106,7 @@ input string = commands in bytes code + filled bytes + address of the commands
 |2   |move cookie to `%rdi`, push `&&touch2`, return|
 |3| recover memory on stack (avoid being overwritten in `hexmatch()`), move &str to `%rdi`, push `&&touch3`, return
 
-</details>
-
-<details> <summary>Part 2: Return-Oriented Programming</summary>
+#### Part 2: Return-Oriented Programming
 
 The stack has uncertain address and is non-executable. Therefore, we are unable to overwrite the address of command string.
 However, the address of text/code is fixed. We can look into the machine code representation of functions, and extract valid parts of commands before return.
@@ -167,13 +159,13 @@ mov %ecx, %esi              addval_187
 leaq (%rdi,%rsi,1), %rax    add_xy
 mov %rax, %rdi              setval_426
 ```
-#pop operations = 8 (#instructions) + 1 (pop %rax) = 9.
+ #pop operations = 8 (#instructions) + 1 (pop %rax) = 9.
 
-</details>
 
 ### Cache lab
 > Optimize performance with undertandings of memory hierarchy.
-<details><summary>Part A: Writing a Cache Simulator </summary>
+
+#### Part A: Writing a Cache Simulator
 
 1. parse the command line arguments using `getopt` function
 For example, we have
@@ -212,9 +204,7 @@ while ((opt = getopt(argc, argv, "hvs:E:b:t:")) != -1) {
 - LRU (least-recently used) policy corresponds to the order in the linked-list. The most recently used block can be always placed in the head.
 - Remove the tail node when the number of blocks is larger than E.
 
-</details>
-
-<details><summary>Part B: Optimizing Matrix Transpose</summary>
+#### Part B: Optimizing Matrix Transpose
 
 cache: $ s = 5, E = 1, b = 5$
 32 bytes per line = 8 ints per line
@@ -255,8 +245,6 @@ Because of 8 ints in a set of cache, it is not efficient enough to use just bloc
 
 *basic idea*: directly apply 8x8 blocks transpose
 *misses*: 1994 < 2000
-
-</details>
 
 ### Shell lab
 > Understand exception control flow by building a tiny shell.
