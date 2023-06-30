@@ -176,7 +176,7 @@ void eval(char *cmdline) {
         // ensure the addjobs happen before entering the sigchld handler
         sigemptyset(&mask);
         sigaddset(&mask, SIGCHLD);    // block the SIGCHLD signal
-        sigprocmask(SIG_SETMASK, &mask, &prev);
+        sigprocmask(SIG_BLOCK, &mask, &prev);
         
         if ((pid = fork()) == 0) {
             setpgid(0, 0);     // set group id = pid
@@ -404,7 +404,7 @@ void sigchld_handler(int sig) {
         else if (WIFSTOPPED(fg_status)) {
             // the job is stopped -> change the fg job state to STOP
             stp_job->state = ST;
-            printf("Job [%d] (%d) stopped by signal 2\n", stp_job->jid, pid);
+            printf("Job [%d] (%d) stopped by signal 20\n", stp_job->jid, pid);
         }
         else {
             unix_error("waitpid error");
