@@ -1,13 +1,20 @@
 /*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
- * 
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
+ * mm-naive.c - Using explicit free list, split and coalesce.
  *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
+ * block structure:
+ * allocated block: | header(size_t) | payload (8*N) bytes | footer(size_t) |
+ * free block:      | header(size_t) | prev_ptr | next_ptr | payload (8*N) bytes | footer(size_t) |
+ * 
+ * In this approach, malloc package uses explicit double-linked list to record the current free blocks,
+ * which adopts the LIFO finding and placement rule.
+ *
+ * Malloc: find a block in the list with bigger size (if not able, require more space by mem_sbrk())
+ * mark this block as allocated, delete from list and split the remaining to be a free block 
+ * (if the remaining size is large)
+ *
+ * Free: unmark the allocated block, coalesce (merge with the adjacent free blocks 
+ * by removing them and adding result block to list)
+ *
  */
 #include <stddef.h>
 #include <stdio.h>
@@ -172,6 +179,10 @@ static void *coalesce(void *bp) {
     return bp;
 }
 
+/* 
+ * ask for at least words bytes from heap under the alignment requirement,
+ * if run out of space and other error, return NULL
+ */
 static void *extend_heap(size_t words) {
     char *bp;
     size_t size = MAX(ALIGN(words), mem_pagesize());    /* align requirement */
