@@ -16,13 +16,13 @@
  * by removing them and adding result block to list)
  *
  */
-#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <math.h>
 
 #include "mm.h"
 #include "memlib.h"
@@ -78,21 +78,35 @@ team_t team = {
 #define NEXT_NODE(bp) (*(void **)GET_NEXT(bp))
 
 /*
- * segregated list: [index] block size - payload size
- * [0] 2^4 = 16 - {1, 8}
- * [1] 2^5 = 32 - {9, 24}
- * [2] 2^6 = 64 - {25, 56}
- * [3] 2^7 = 128 - {57, 120}
+ * segregated list: [index] block size
+ * [0] 2^4 = {16 - 24}
+ * [1] 2^5 = {32 - 56}
+ * [2] 2^6 = {64 - 120}
+ * [3] 2^7 = {128 - 248}
  * ...
- * [8] 2^12 = 4096 - {2041, 4088}
- * [9] > 2^12 - {4089, \infty}
+ * [7] 2^11 = {2048 - 4088}
+ * [8] >= 2^12
  */
-static void *HEAD;
+
+/* segregated list number */
+#define SEGNUM 9
+
+static void *LISTS;
 static void *TAIL;
 
+/* given the block size, return the index of segregated lists.
+ * block size >= 16
+ */
 static size_t get_index(size_t bsize) {
-    size_t index = ceil(log2(bsize)) - 4;
-    return (index > 9)? 9 : index;
+    size_t r, shift;
+    r = (bsize > 0xFFFF)   << 4; bsize >>= r;
+    shift = (bsize > 0xFF) << 3; bsize >>= shift; r |= shift;
+    shift = (bsize > 0xF)  << 2; bsize >>= shift; r |= shift;
+    shift = (bsize > 0x3)  << 1; bsize >>= shift; r |= shift;
+                                          r |= (bsize >> 1);
+    int index = (int)r - 4;     /* add offset: [0] - 16 bytes */
+    if (index >= SEGNUM) index = SEGNUM - 1;        /* the largest free list */
+    return index;
 }
 
 #define get_head_ptr(index) ((char *)LISTS + (index) * MIN_BLK_SIZE + 2 * PTR_SIZE + HD_SIZE)
@@ -109,11 +123,20 @@ static size_t get_index(size_t bsize) {
 #define LEFT_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)FHDP(bp) - HD_SIZE))
 #define RIGHT_BLKP(bp) ((char *)(bp) + GET_SIZE(FHDP(bp)))
 
+static void add_to_list(void *bp);
+static void delete_block(void *bp);
+static void *find_free(size_t size);
+static void *coalesce(void *bp);
+static void *extend_heap(size_t words);
+
 /* 
  * add the free block to the front of free-list,
  * (*bp) should point to the address of **free** block
  */
 static void add_to_list(void *bp) {
+    size_t bsize = GET_SIZE(FHDP(bp));      /* get the block size of this free block */
+    void *HEAD = get_head_ptr(get_index(bsize));    /* compute the corresponding index and head node */
+
     void *nx_node = NEXT_NODE(HEAD);
     PUT_PTR(GET_NEXT(bp), nx_node);     /* bp.next = next_node */
     PUT_PTR(GET_PREV(bp), HEAD);        /* bp.prev = head */
@@ -132,14 +155,26 @@ static void delete_block(void *bp) {
     PUT_PTR(GET_PREV(next_node), prev_node);
 }
 
-/* find a free block that can hold the required size of data */
+/* find a free block that can hold the required size of data,
+ * return a pointer to this free block, or NULL if no block available.
+ */
 static void *find_free(size_t size) {
     /* traverse the free-list and return the first match block */
-    void *ptr = NEXT_NODE(HEAD);
-    while (ptr != TAIL && GET_SIZE(FHDP(ptr)) < size) {
-        ptr = NEXT_NODE(ptr);
+    size_t index = get_index(size);     /* get the 1st possible index */
+    while (index < SEGNUM) {
+        void *HEAD = get_head_ptr(index);
+        void *ptr = NEXT_NODE(HEAD);
+
+        /* search the current free-list */
+        while (ptr != TAIL && GET_SIZE(FHDP(ptr)) < size) {
+            ptr = NEXT_NODE(ptr);
+        }
+        if (ptr != TAIL) return ptr;    /* block found */
+        else index++;                   /* block not found, search the next free-list */
     }
-    return (ptr == TAIL)? NULL : ptr;
+
+    /* reach here: no block in the heap could hold this size */
+    return NULL;
 }
 
 /*
@@ -208,31 +243,36 @@ static void *extend_heap(size_t words) {
  */
 int mm_init(void)
 {
-    if (mem_sbrk(ALIGN(7 * HD_SIZE + 5 * PTR_SIZE)) == (void *)(-1)) {
+    if (mem_sbrk(ALIGN((SEGNUM+1) * MIN_BLK_SIZE + PTR_SIZE + 3 * HD_SIZE)) == (void *)(-1)) {
         return -1;
     }
 
-    /* initialize the head and tail nodes to be free and empty */
-    HEAD = (char *)mem_heap_lo() + 3 * PTR_SIZE + HD_SIZE;
-    TAIL = HEAD + MIN_BLK_SIZE;
-    // printf("HEAD: %p, TAIL: %p\n", HEAD, TAIL);
-
-    PUT_SIZE(FHDP(HEAD), PACK(MIN_BLK_SIZE, 0));
-    PUT_PTR(GET_PREV(HEAD), NULL);
-    PUT_PTR(GET_NEXT(HEAD), TAIL);   /* head -> tail */
-    PUT_SIZE(FFTP(HEAD), PACK(MIN_BLK_SIZE, 0));
+    /* initialize the head and tail nodes to be free and empty
+    *             LISTS
+    *  heap start |[0] | [1] | [2] | ... | [SEGNUM - 1] | TAIL | empty (PTR_SIZE) | prologue | epilogue | heap end
+    *  all lists share the same tail node
+    */
+    LISTS = mem_heap_lo();
+    TAIL = LISTS + SEGNUM * MIN_BLK_SIZE + 2 * PTR_SIZE + HD_SIZE;
+    for (int i = 0; i < SEGNUM; i++) {
+        void *HEAD = get_head_ptr(i);
+        PUT_SIZE(FHDP(HEAD), PACK(MIN_BLK_SIZE, 0));
+        PUT_PTR(GET_PREV(HEAD), NULL);
+        PUT_PTR(GET_NEXT(HEAD), TAIL);   /* head -> tail */
+        PUT_SIZE(FFTP(HEAD), PACK(MIN_BLK_SIZE, 0));
+    }
 
     PUT_SIZE(FHDP(TAIL), PACK(MIN_BLK_SIZE, 0));
-    PUT_PTR(GET_PREV(TAIL), HEAD);    /* head <- tail */
+    PUT_PTR(GET_PREV(TAIL), NULL);    /* tail can point to any position */
     PUT_PTR(GET_NEXT(TAIL), NULL);
     PUT_SIZE(FFTP(TAIL), PACK(MIN_BLK_SIZE, 0));
 
     /* initialize the prologue and epilogue, mark as allocated */
-    char *prologue = (char *)TAIL + PTR_SIZE;
+    char *prologue = (char *)TAIL + 2 * PTR_SIZE;
     PUT_SIZE(prologue, PACK(2 * HD_SIZE, 1));
     PUT_SIZE(prologue + HD_SIZE, PACK(2 * HD_SIZE, 1));
 
-    char *epilogue = (char *)mem_heap_hi() + 1 - HD_SIZE;
+    char *epilogue = prologue + 2 * HD_SIZE;
     PUT_SIZE(epilogue, PACK(0, 1));
 
     /* initialize the free block + add to the free-list */
@@ -267,7 +307,7 @@ void *mm_malloc(size_t size)
     PUT_SIZE(footer, PACK(bsize, 1));
     PUT_SIZE(header, PACK(bsize, 1));
 
-    if (bsize - nsize >= MIN_BLK_SIZE + ALIGNMENT) {
+    if (bsize - nsize >= MIN_BLK_SIZE) {
         /* split the free block */
         PUT_SIZE(header, PACK(nsize, 1));
         void *new_footer = FFTP(bp);
