@@ -368,10 +368,20 @@ void *mm_realloc(void *ptr, size_t size)
             if (temp_size >= newsize) {
                 /* the total block size can hold the required new size */
                 delete_block(nextbp);       /* delete the next block from free list */
-                PUT_SIZE(AHDP(ptr), PACK(temp_size, 0));        /* unmark the header of allocated block */
-                PUT_SIZE(AFTP(ptr), PACK(temp_size, 0));        /* unmark the footer of next free block */
+                PUT_SIZE(AHDP(ptr), PACK(temp_size, 0));        /* change size of the header of allocated block */
+                PUT_SIZE(AFTP(ptr), PACK(temp_size, 0));        /* change size of the footer of next free block */
                 return place((char *)ptr + 2 * PTR_SIZE, newsize);
             }
+        }
+        else if (GET_SIZE((char *)AFTP(ptr) + HD_SIZE) == 0) {
+            /* the next block is epilogue */
+            void *bp;
+            if ((bp = mem_sbrk(newsize - oldsize)) == (void *)(-1))     /* extend heap to hold the remaining bytes */
+                return NULL;
+            PUT_SIZE(AHDP(ptr), PACK(newsize, 1));
+            PUT_SIZE(AFTP(ptr), PACK(newsize, 1));
+            PUT_SIZE((char *)AFTP(ptr) + HD_SIZE, PACK(0, 1));      /* new epilogue */
+            return ptr;
         }
     }
 
