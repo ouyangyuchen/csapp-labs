@@ -63,7 +63,6 @@ team_t team = {
 #define HD_SIZE (sizeof(size_t))
 #define PTR_SIZE (sizeof(void *))
 #define MIN_BLK_SIZE (2 * HD_SIZE + 2 * PTR_SIZE)
-#define CHUNKSIZE (1 << 8)
 /* operate on the header or footer */
 #define PACK(size, alloc) ((size) | (alloc))
 #define GET_SIZE(p) (*(size_t *)(p) & ~0x7)
@@ -228,7 +227,7 @@ static void *coalesce(void *bp) {
  */
 static void *extend_heap(size_t words) {
     char *bp;
-    size_t size = MAX(ALIGN(words), CHUNKSIZE);    /* align requirement */
+    size_t size = ALIGN(words);    /* align requirement */
     
     if ((bp = mem_sbrk(size)) == (void *)(-1))
         return NULL;
@@ -301,9 +300,6 @@ int mm_init(void)
     char *epilogue = prologue + 2 * HD_SIZE;
     PUT_SIZE(epilogue, PACK(0, 1));
 
-    /* initialize the free block + add to the free-list */
-    if (extend_heap(CHUNKSIZE) == NULL)
-        return -1;
     return 0;
 }
 
