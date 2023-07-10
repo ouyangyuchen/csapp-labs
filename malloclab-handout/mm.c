@@ -63,7 +63,7 @@ team_t team = {
 #define HD_SIZE (sizeof(size_t))
 #define PTR_SIZE (sizeof(void *))
 #define MIN_BLK_SIZE (2 * HD_SIZE + 2 * PTR_SIZE)
-#define CHUNKSIZE (1 << 12)
+#define CHUNKSIZE (1 << 8)
 /* operate on the header or footer */
 #define PACK(size, alloc) ((size) | (alloc))
 #define GET_SIZE(p) (*(size_t *)(p) & ~0x7)
