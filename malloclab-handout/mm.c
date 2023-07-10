@@ -16,6 +16,7 @@
  * by removing them and adding result block to list)
  *
  */
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,7 +54,10 @@ team_t team = {
 
 /*
  * the block structure:
+ *                                                             bp
  * alloc = 0: | header: size_t 4 | prev: ptr 4 | next: ptr 4 | payload 8*N | footer size_t 4|
+ *
+ *                                 bp
  * alloc = 1: | header: size_t 4 | payload 8*N | footer size_t 4|
  */
 #define HD_SIZE (sizeof(size_t))
@@ -72,36 +76,38 @@ team_t team = {
 /* get the block pointer in the explicit free list */
 #define PREV_NODE(bp) (*(void **)GET_PREV(bp))
 #define NEXT_NODE(bp) (*(void **)GET_NEXT(bp))
-/* the head/tail block pointer */
+
+/*
+ * segregated list: [index] block size - payload size
+ * [0] 2^4 = 16 - {1, 8}
+ * [1] 2^5 = 32 - {9, 24}
+ * [2] 2^6 = 64 - {25, 56}
+ * [3] 2^7 = 128 - {57, 120}
+ * ...
+ * [8] 2^12 = 4096 - {2041, 4088}
+ * [9] > 2^12 - {4089, \infty}
+ */
 static void *HEAD;
 static void *TAIL;
 
-/* return the address of header */
-static void *HD(void *bp, int alloc) {
-    int offset = (!alloc) * 2 * PTR_SIZE + HD_SIZE;
-    return (char *)bp - offset;
+static size_t get_index(size_t bsize) {
+    size_t index = ceil(log2(bsize)) - 4;
+    return (index > 9)? 9 : index;
 }
+
+#define get_head_ptr(index) ((char *)LISTS + (index) * MIN_BLK_SIZE + 2 * PTR_SIZE + HD_SIZE)
+
+/* return the address of header */
+#define AHDP(bp) ((char *)(bp) - HD_SIZE)
+#define FHDP(bp) ((char *)(bp) - HD_SIZE - 2 * PTR_SIZE)
 
 /* return the address of footer */
-static void *FT(void *bp, int alloc) {
-    char *header = HD(bp, alloc);
-    return header + GET_SIZE(header) - HD_SIZE;
-}
+#define FFTP(bp) ((char *)FHDP(bp) + GET_SIZE(FHDP(bp)) - HD_SIZE)
+#define AFTP(bp) ((char *)AHDP(bp) + GET_SIZE(AHDP(bp)) - HD_SIZE)
 
-/* get the previous block pointer in the heap */
-static void *LEFT_BLKP(void *bp, int alloc) {
-    char *header = HD(bp, alloc);
-    int offset = (!IS_ALLOC(header - HD_SIZE)) * 2 * PTR_SIZE;
-    int size_prev = GET_SIZE(header - HD_SIZE);
-    return header - size_prev + offset + HD_SIZE;
-}
-
-/* get the next block pointer in the heap */
-static void *RIGHT_BLKP(void *bp, int alloc) {
-    char *footer = FT(bp, alloc);
-    int offset = (!IS_ALLOC(footer + HD_SIZE)) * 2 * PTR_SIZE;
-    return footer + 2 * HD_SIZE + offset;
-}
+/* get the previous/next block pointer in the heap */
+#define LEFT_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)FHDP(bp) - HD_SIZE))
+#define RIGHT_BLKP(bp) ((char *)(bp) + GET_SIZE(FHDP(bp)))
 
 /* 
  * add the free block to the front of free-list,
@@ -130,7 +136,7 @@ static void delete_block(void *bp) {
 static void *find_free(size_t size) {
     /* traverse the free-list and return the first match block */
     void *ptr = NEXT_NODE(HEAD);
-    while (ptr != TAIL && GET_SIZE(HD(ptr, 0)) < size) {
+    while (ptr != TAIL && GET_SIZE(FHDP(ptr)) < size) {
         ptr = NEXT_NODE(ptr);
     }
     return (ptr == TAIL)? NULL : ptr;
@@ -141,11 +147,11 @@ static void *find_free(size_t size) {
  * (*bp) is block pointer of an **free** block
  */
 static void *coalesce(void *bp) {
-    size_t size = GET_SIZE(HD(bp, 0));
-    void *prev_block = LEFT_BLKP(bp, 0);
-    void *next_block = RIGHT_BLKP(bp, 0);
-    size_t prev_alloc = IS_ALLOC((char *)HD(bp, 0) - HD_SIZE);
-    size_t next_alloc = IS_ALLOC((char *)HD(bp, 0) + size);
+    size_t size = GET_SIZE(FHDP(bp));
+    void *prev_block = LEFT_BLKP(bp);
+    void *next_block = RIGHT_BLKP(bp);
+    size_t prev_alloc = IS_ALLOC((char *)FHDP(bp) - HD_SIZE);
+    size_t next_alloc = IS_ALLOC((char *)FHDP(bp) + size);
 
     if (prev_alloc && next_alloc) {
         // printf("case 1\n");
@@ -153,25 +159,25 @@ static void *coalesce(void *bp) {
     else if (prev_alloc && !next_alloc) {
         // printf("case 2\n");
         delete_block(next_block);       /* delete the next_block from free-list, because it no longer exists */
-        size += GET_SIZE(HD(next_block, 0));
-        PUT_SIZE(HD(bp, 0), PACK(size, 0));
-        PUT_SIZE(FT(next_block, 0), PACK(size, 0));
+        size += GET_SIZE(FHDP(next_block));
+        PUT_SIZE(FHDP(bp), PACK(size, 0));
+        PUT_SIZE(FFTP(next_block), PACK(size, 0));
     }
     else if (!prev_alloc && next_alloc) {
         // printf("case 3\n");
         delete_block(prev_block);       /* same for the previous block */
-        size += GET_SIZE(HD(prev_block, 0));
-        PUT_SIZE(HD(prev_block, 0), PACK(size, 0));
-        PUT_SIZE(FT(bp, 0), PACK(size, 0));
+        size += GET_SIZE(FHDP(prev_block));
+        PUT_SIZE(FHDP(prev_block), PACK(size, 0));
+        PUT_SIZE(FFTP(bp), PACK(size, 0));
         bp = prev_block;
     }
     else {
         // printf("case 4\n");
         delete_block(prev_block);
         delete_block(next_block);
-        size += GET_SIZE(HD(prev_block, 0)) + GET_SIZE(HD(next_block, 0));
-        PUT_SIZE(HD(prev_block, 0), PACK(size, 0));
-        PUT_SIZE(FT(next_block, 0), PACK(size, 0));
+        size += GET_SIZE(FHDP(prev_block)) + GET_SIZE(FHDP(next_block));
+        PUT_SIZE(FHDP(prev_block), PACK(size, 0));
+        PUT_SIZE(FFTP(next_block), PACK(size, 0));
         bp = prev_block;
     }
 
@@ -190,9 +196,9 @@ static void *extend_heap(size_t words) {
     if ((bp = mem_sbrk(size)) == (void *)(-1))
         return NULL;
     
-    PUT_SIZE(HD(bp, 1), PACK(size, 0));                   /* overwrite the old epilogue with header */
-    PUT_SIZE(FT(bp, 1), PACK(size, 0));                   /* copy the header to footer */
-    PUT_SIZE((char *)FT(bp, 1) + HD_SIZE, PACK(0, 1));    /* new epilogue */
+    PUT_SIZE(AHDP(bp), PACK(size, 0));                   /* overwrite the old epilogue with header */
+    PUT_SIZE(AFTP(bp), PACK(size, 0));                   /* copy the header to footer */
+    PUT_SIZE((char *)AFTP(bp) + HD_SIZE, PACK(0, 1));    /* new epilogue */
     
     return coalesce((char *)bp + 2 * PTR_SIZE);
 }
@@ -211,15 +217,15 @@ int mm_init(void)
     TAIL = HEAD + MIN_BLK_SIZE;
     // printf("HEAD: %p, TAIL: %p\n", HEAD, TAIL);
 
-    PUT_SIZE(HD(HEAD, 0), PACK(MIN_BLK_SIZE, 0));
+    PUT_SIZE(FHDP(HEAD), PACK(MIN_BLK_SIZE, 0));
     PUT_PTR(GET_PREV(HEAD), NULL);
     PUT_PTR(GET_NEXT(HEAD), TAIL);   /* head -> tail */
-    PUT_SIZE(FT(HEAD, 0), PACK(MIN_BLK_SIZE, 0));
+    PUT_SIZE(FFTP(HEAD), PACK(MIN_BLK_SIZE, 0));
 
-    PUT_SIZE(HD(TAIL, 0), PACK(MIN_BLK_SIZE, 0));
+    PUT_SIZE(FHDP(TAIL), PACK(MIN_BLK_SIZE, 0));
     PUT_PTR(GET_PREV(TAIL), HEAD);    /* head <- tail */
     PUT_PTR(GET_NEXT(TAIL), NULL);
-    PUT_SIZE(FT(TAIL, 0), PACK(MIN_BLK_SIZE, 0));
+    PUT_SIZE(FFTP(TAIL), PACK(MIN_BLK_SIZE, 0));
 
     /* initialize the prologue and epilogue, mark as allocated */
     char *prologue = (char *)TAIL + PTR_SIZE;
@@ -255,8 +261,8 @@ void *mm_malloc(size_t size)
     delete_block(bp);       /* remove the block in the list for allocating */
 
     /* mark the entire free block as allocated */
-    void *header = HD(bp, 0);
-    void *footer = FT(bp, 0);
+    void *header = FHDP(bp);
+    void *footer = FFTP(bp);
     size_t bsize = GET_SIZE(header);
     PUT_SIZE(footer, PACK(bsize, 1));
     PUT_SIZE(header, PACK(bsize, 1));
@@ -264,7 +270,7 @@ void *mm_malloc(size_t size)
     if (bsize - nsize >= MIN_BLK_SIZE + ALIGNMENT) {
         /* split the free block */
         PUT_SIZE(header, PACK(nsize, 1));
-        void *new_footer = FT(bp, 0);
+        void *new_footer = FFTP(bp);
         PUT_SIZE(new_footer, PACK(nsize, 1));    /* mark the new footer to be allocated */
         PUT_SIZE((char *)new_footer + HD_SIZE, PACK(bsize - nsize, 0));
         PUT_SIZE(footer, PACK(bsize - nsize, 0));       /* unmark the splitted block footer */
@@ -279,9 +285,9 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
-    size_t size = GET_SIZE(HD(ptr, 1));
-    PUT_SIZE(HD(ptr, 1), PACK(size, 0));
-    PUT_SIZE(FT(ptr, 1), PACK(size, 0));
+    size_t size = GET_SIZE(AHDP(ptr));
+    PUT_SIZE(AHDP(ptr), PACK(size, 0));
+    PUT_SIZE(AFTP(ptr), PACK(size, 0));
 
     coalesce((char *)ptr + 2 * PTR_SIZE);    /* delete the adjacent free blocks from list and merge */
 }
@@ -298,7 +304,7 @@ void *mm_realloc(void *ptr, size_t size)
     newptr = mm_malloc(size);
     if (newptr == NULL)
       return NULL;
-    copySize = GET_SIZE((char *)oldptr - HD_SIZE);
+    copySize = GET_SIZE(AHDP(ptr));
     if (size < copySize)
       copySize = size;
     memcpy(newptr, oldptr, copySize);
