@@ -1,19 +1,49 @@
 /*
- * mm-naive.c - Using explicit free list, split and coalesce.
- *
- * block structure:
- * allocated block: | header(size_t) | payload (8*N) bytes | footer(size_t) |
- * free block:      | header(size_t) | prev_ptr | next_ptr | payload (8*N) bytes | footer(size_t) |
+ * mm-seglist.c - Using segregated free-list, split at malloc and coalesce at free.
  * 
- * In this approach, malloc package uses explicit double-linked list to record the current free blocks,
+ * In this approach, malloc package uses segregated double-linked list to record the current free blocks,
  * which adopts the LIFO finding and placement rule.
+ * 
+ * Init:
+ * Extend heap by calling sbrk()
+ * Initialize a number of head nodes in the segregated list, all free-lists share the same tail node (tail.prev doesn't matter)
+ * Initialize prologue and epilogue blocks and mark as allocated (reduce corner cases)
+ * NOTE: At init(), the program doesn't ask for more space, the heap extends on demand. (malloc, realloc)
  *
- * Malloc: find a block in the list with bigger size (if not able, require more space by mem_sbrk())
- * mark this block as allocated, delete from list and split the remaining to be a free block 
- * (if the remaining size is large)
+ * Malloc: 
+ * Find a free block at specific size-list, if not found, go to the next list with larger size,
+ * If after traversing lists and still fail to find a block to hold the required 'size' data, extend heap for 'size' bytes.
+ * When the block is found, delete this free block from seglist and place the block (mark as allocated + split)
  *
- * Free: unmark the allocated block, coalesce (merge with the adjacent free blocks 
- * by removing them and adding result block to list)
+ * Free: 
+ * Unmark the allocated block + coalesce + add to the corresponding list
+ * 
+ * Realloc:
+ * case 1: new block size < old block size -> shrink the current allocated block by calling place()
+ * case 2: new block size >= old block size + the next block on heap is free + the total size satisfy the requirement 
+ *      -> merge the two blocks and place (next expansion strategy)
+ * case 3: new block size >= old block size + the next block is epilogue
+ *      -> extend heap for the exceeded bytes, change size of header and footer
+ * other case: simply calling free and malloc for new size
+ * 
+ * ------------------------------------------------------------------------------------------------
+ * block structure:
+ *                                                             bp
+ * alloc = 0: | header: size_t 4 | prev: ptr 4 | next: ptr 4 | payload 8*N | footer size_t 4|
+ *
+ *                                 bp
+ * alloc = 1: | header: size_t 4 | payload 8*N | footer size_t 4|
+ * ------------------------------------------------------------------------------------------------
+ * segregated list: [index] block size
+ * 
+ * [0] 2^4 = {16 - 24}
+ * [1] 2^5 = {32 - 56}
+ * [2] 2^6 = {64 - 120}
+ * [3] 2^7 = {128 - 248}
+ * ...
+ * [7] 2^11 = {2048 - 4088}
+ * [8] >= 2^12
+ * ------------------------------------------------------------------------------------------------
  *
  */
 #include <stddef.h>
@@ -27,22 +57,20 @@
 #include "mm.h"
 #include "memlib.h"
 
-/*********************************************************
- * NOTE TO STUDENTS: Before you do anything else, please
- * provide your team information in the following struct.
- ********************************************************/
 team_t team = {
     /* Team name */
     "ateam",
     /* First member's full name */
     "Yuchen Ouyang",
     /* First member's email address */
-    "something",
+    "oyyc0619@sjtu.edu.cn",
     /* Second member's full name (leave blank if none) */
     "",
     /* Second member's email address (leave blank if none) */
     ""
 };
+
+/* -------------------------------------SIZE OPERATION--------------------------------------------- */
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
@@ -52,47 +80,46 @@ team_t team = {
 
 #define MAX(a, b) (((a) > (b))? (a) : (b))
 
-/*
- * the block structure:
- *                                                             bp
- * alloc = 0: | header: size_t 4 | prev: ptr 4 | next: ptr 4 | payload 8*N | footer size_t 4|
- *
- *                                 bp
- * alloc = 1: | header: size_t 4 | payload 8*N | footer size_t 4|
- */
 #define HD_SIZE (sizeof(size_t))
 #define PTR_SIZE (sizeof(void *))
 #define MIN_BLK_SIZE (2 * HD_SIZE + 2 * PTR_SIZE)
+
+/* -------------------------------------BLOCK OPERATION-------------------------------------------- */
+
 /* operate on the header or footer */
 #define PACK(size, alloc) ((size) | (alloc))
 #define GET_SIZE(p) (*(size_t *)(p) & ~0x7)
 #define IS_ALLOC(p) (*(size_t *)(p) & 0x1)
+
 /* get the address of previous or next pointer */
 #define GET_PREV(bp) ((char *)(bp) - 2 * PTR_SIZE)
 #define GET_NEXT(bp) ((char *)(bp) - PTR_SIZE)
+
 /* put size_t or pointer-size bytes value to the memory location */
 #define PUT_SIZE(p, val) (*(size_t *)(p) = (val))
 #define PUT_PTR(p, addr) (*(void **)(p) = (addr))
+
 /* get the block pointer in the explicit free list */
 #define PREV_NODE(bp) (*(void **)GET_PREV(bp))
 #define NEXT_NODE(bp) (*(void **)GET_NEXT(bp))
 
-/*
- * segregated list: [index] block size
- * [0] 2^4 = {16 - 24}
- * [1] 2^5 = {32 - 56}
- * [2] 2^6 = {64 - 120}
- * [3] 2^7 = {128 - 248}
- * ...
- * [7] 2^11 = {2048 - 4088}
- * [8] >= 2^12
- */
+/* return the address of header */
+#define AHDP(bp) ((char *)(bp) - HD_SIZE)
+#define FHDP(bp) ((char *)(bp) - HD_SIZE - 2 * PTR_SIZE)
 
-/* segregated list number */
-#define SEGNUM 9
+/* return the address of footer */
+#define FFTP(bp) ((char *)FHDP(bp) + GET_SIZE(FHDP(bp)) - HD_SIZE)
+#define AFTP(bp) ((char *)AHDP(bp) + GET_SIZE(AHDP(bp)) - HD_SIZE)
 
-static void *LISTS;
-static void *TAIL;
+/* get the previous/next block pointer in the heap */
+#define LEFT_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)FHDP(bp) - HD_SIZE))
+#define RIGHT_BLKP(bp) ((char *)(bp) + GET_SIZE(FHDP(bp)))
+
+/* --------------------------------------SEGRATED LIST MACROS-------------------------------------- */
+
+#define SEGNUM 9        /* number of free lists */
+static void *LISTS;     /* the address of head nodes array */
+static void *TAIL;      /* shared tail node of every free-list */
 
 /* given the block size, return the index of segregated lists.
  * block size >= 16
@@ -111,17 +138,7 @@ static size_t get_index(size_t bsize) {
 
 #define get_head_ptr(index) ((char *)LISTS + (index) * MIN_BLK_SIZE + 2 * PTR_SIZE + HD_SIZE)
 
-/* return the address of header */
-#define AHDP(bp) ((char *)(bp) - HD_SIZE)
-#define FHDP(bp) ((char *)(bp) - HD_SIZE - 2 * PTR_SIZE)
-
-/* return the address of footer */
-#define FFTP(bp) ((char *)FHDP(bp) + GET_SIZE(FHDP(bp)) - HD_SIZE)
-#define AFTP(bp) ((char *)AHDP(bp) + GET_SIZE(AHDP(bp)) - HD_SIZE)
-
-/* get the previous/next block pointer in the heap */
-#define LEFT_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)FHDP(bp) - HD_SIZE))
-#define RIGHT_BLKP(bp) ((char *)(bp) + GET_SIZE(FHDP(bp)))
+/* ---------------------------PRIVATE FUNCTIONS DECLARATION--------------------------------------- */
 
 static void add_to_list(void *bp);
 static void delete_block(void *bp);
@@ -130,6 +147,131 @@ static void *coalesce(void *bp);
 static void *extend_heap(size_t words);
 static void *place(void *bp, size_t size);
 
+/* ----------------------------------PUBLIC FUNCTIONS--------------------------------------------- */
+
+int mm_init(void)
+{
+    if (mem_sbrk(ALIGN((SEGNUM+1) * MIN_BLK_SIZE + PTR_SIZE + 3 * HD_SIZE)) == (void *)(-1)) {
+        return -1;
+    }
+
+    /* initialize the head and tail nodes to be free and empty
+    *             LISTS
+    *  heap start |[0] | [1] | [2] | ... | [SEGNUM - 1] | TAIL | empty (PTR_SIZE) | prologue | epilogue | heap end
+    *  all lists share the same tail node
+    */
+    LISTS = mem_heap_lo();
+    TAIL = LISTS + SEGNUM * MIN_BLK_SIZE + 2 * PTR_SIZE + HD_SIZE;
+    for (int i = 0; i < SEGNUM; i++) {
+        void *HEAD = get_head_ptr(i);
+        PUT_SIZE(FHDP(HEAD), PACK(MIN_BLK_SIZE, 0));
+        PUT_PTR(GET_PREV(HEAD), NULL);
+        PUT_PTR(GET_NEXT(HEAD), TAIL);   /* head -> tail */
+        PUT_SIZE(FFTP(HEAD), PACK(MIN_BLK_SIZE, 0));
+    }
+
+    PUT_SIZE(FHDP(TAIL), PACK(MIN_BLK_SIZE, 0));
+    PUT_PTR(GET_PREV(TAIL), NULL);    /* tail can point to any position */
+    PUT_PTR(GET_NEXT(TAIL), NULL);
+    PUT_SIZE(FFTP(TAIL), PACK(MIN_BLK_SIZE, 0));
+
+    /* initialize the prologue and epilogue, mark as allocated */
+    char *prologue = (char *)TAIL + 2 * PTR_SIZE;
+    PUT_SIZE(prologue, PACK(2 * HD_SIZE, 1));
+    PUT_SIZE(prologue + HD_SIZE, PACK(2 * HD_SIZE, 1));
+
+    char *epilogue = prologue + 2 * HD_SIZE;
+    PUT_SIZE(epilogue, PACK(0, 1));
+
+    return 0;
+}
+
+void *mm_malloc(size_t size)
+{
+    if (size == 0) return NULL;
+
+    size_t nsize = ALIGN(size) + 2 * HD_SIZE;     /* calculate the space that actually required */
+    void *bp = find_free(nsize);                /* find the matched block with larger size */
+    if (bp == NULL) {
+        /* no matched free block, ask for more heap space */
+        if ((bp = extend_heap(nsize)) == NULL) {
+            fprintf(stderr, "Run out of heap memory."); 
+            exit(1);
+        }
+    }
+    delete_block(bp);       /* remove the block in the list for allocating */
+    bp = place(bp, nsize);  /* place the block in this free block and split if necessary */
+
+    return bp;
+}
+
+void mm_free(void *ptr)
+{
+    /* unmark this allocated block */
+    size_t size = GET_SIZE(AHDP(ptr));
+    PUT_SIZE(AHDP(ptr), PACK(size, 0));
+    PUT_SIZE(AFTP(ptr), PACK(size, 0));
+
+    coalesce((char *)ptr + 2 * PTR_SIZE);    /* delete the adjacent free blocks from list and merge */
+}
+
+void *mm_realloc(void *ptr, size_t size)
+{
+    /* special cases */
+    if (ptr == NULL) return mm_malloc(size);
+    if (size == 0) {
+        mm_free(ptr);
+        return NULL;
+    }
+
+    size_t oldsize = GET_SIZE(AHDP(ptr));
+    size_t newsize = ALIGN(size) + 2 * PTR_SIZE;
+    if (oldsize >= newsize) {
+        /* block shrink */
+        return place((char *)ptr + 2 * PTR_SIZE, newsize);
+    }
+    else {
+        /* block expansion, ask for next block first */
+        if (!IS_ALLOC((char *)AFTP(ptr) + HD_SIZE)) {
+            void *nextbp = RIGHT_BLKP((char *)ptr + 2 * PTR_SIZE);
+            size_t temp_size = oldsize + GET_SIZE(FHDP(nextbp));
+            if (temp_size >= newsize) {
+                /* the total block size can hold the required new size */
+                delete_block(nextbp);       /* delete the next block from free list */
+                PUT_SIZE(AHDP(ptr), PACK(temp_size, 0));        /* change size of the header of allocated block */
+                PUT_SIZE(AFTP(ptr), PACK(temp_size, 0));        /* change size of the footer of next free block */
+                return place((char *)ptr + 2 * PTR_SIZE, newsize);
+            }
+        }
+        else if (GET_SIZE((char *)AFTP(ptr) + HD_SIZE) == 0) {
+            /* the next block is epilogue */
+            void *bp;
+            if ((bp = mem_sbrk(newsize - oldsize)) == (void *)(-1))     /* extend heap to hold the remaining bytes */
+                return NULL;
+            PUT_SIZE(AHDP(ptr), PACK(newsize, 1));
+            PUT_SIZE(AFTP(ptr), PACK(newsize, 1));
+            PUT_SIZE((char *)AFTP(ptr) + HD_SIZE, PACK(0, 1));      /* new epilogue */
+            return ptr;
+        }
+    }
+
+    /* otherwise use free and malloc */
+    void *oldptr = ptr;
+    void *newptr;
+    size_t copySize;
+
+    newptr = mm_malloc(size);
+    if (newptr == NULL)
+      return NULL;
+    copySize = GET_SIZE(AHDP(ptr));
+    if (size < copySize)
+      copySize = size;
+    memcpy(newptr, oldptr, copySize);
+    mm_free(oldptr);
+    return newptr;
+}
+
+/* --------------------------------PRICATE FUNCTION IMPLEMENTATION--------------------------------- */
 /* 
  * add the free block to the front of free-list,
  * (*bp) should point to the address of **free** block
@@ -146,7 +288,7 @@ static void add_to_list(void *bp) {
 }
 
 /*
- * delete the free block from list, but leave it unmarked still
+ * delete the free block from the corresponding list, but leave it unmarked still
  */
 static void delete_block(void *bp) {
     if (bp == NULL) return;
@@ -262,151 +404,4 @@ static void *place(void *bp, size_t size) {
     }
     return (char *)bp - 2 * PTR_SIZE;
 }
-
-/* 
- * mm_init - initialize the malloc package.
- */
-int mm_init(void)
-{
-    if (mem_sbrk(ALIGN((SEGNUM+1) * MIN_BLK_SIZE + PTR_SIZE + 3 * HD_SIZE)) == (void *)(-1)) {
-        return -1;
-    }
-
-    /* initialize the head and tail nodes to be free and empty
-    *             LISTS
-    *  heap start |[0] | [1] | [2] | ... | [SEGNUM - 1] | TAIL | empty (PTR_SIZE) | prologue | epilogue | heap end
-    *  all lists share the same tail node
-    */
-    LISTS = mem_heap_lo();
-    TAIL = LISTS + SEGNUM * MIN_BLK_SIZE + 2 * PTR_SIZE + HD_SIZE;
-    for (int i = 0; i < SEGNUM; i++) {
-        void *HEAD = get_head_ptr(i);
-        PUT_SIZE(FHDP(HEAD), PACK(MIN_BLK_SIZE, 0));
-        PUT_PTR(GET_PREV(HEAD), NULL);
-        PUT_PTR(GET_NEXT(HEAD), TAIL);   /* head -> tail */
-        PUT_SIZE(FFTP(HEAD), PACK(MIN_BLK_SIZE, 0));
-    }
-
-    PUT_SIZE(FHDP(TAIL), PACK(MIN_BLK_SIZE, 0));
-    PUT_PTR(GET_PREV(TAIL), NULL);    /* tail can point to any position */
-    PUT_PTR(GET_NEXT(TAIL), NULL);
-    PUT_SIZE(FFTP(TAIL), PACK(MIN_BLK_SIZE, 0));
-
-    /* initialize the prologue and epilogue, mark as allocated */
-    char *prologue = (char *)TAIL + 2 * PTR_SIZE;
-    PUT_SIZE(prologue, PACK(2 * HD_SIZE, 1));
-    PUT_SIZE(prologue + HD_SIZE, PACK(2 * HD_SIZE, 1));
-
-    char *epilogue = prologue + 2 * HD_SIZE;
-    PUT_SIZE(epilogue, PACK(0, 1));
-
-    return 0;
-}
-
-/* 
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
- */
-void *mm_malloc(size_t size)
-{
-    if (size == 0) return NULL;
-
-    size_t nsize = ALIGN(size) + 2 * HD_SIZE;     /* calculate the space that actually required */
-    void *bp = find_free(nsize);                /* find the matched block with larger size */
-    if (bp == NULL) {
-        /* no matched free block, ask for more heap space */
-        if ((bp = extend_heap(nsize)) == NULL) {
-            fprintf(stderr, "Run out of heap memory."); 
-            exit(1);
-        }
-    }
-    delete_block(bp);       /* remove the block in the list for allocating */
-    bp = place(bp, nsize);
-
-    return bp;
-}
-
-/*
- * mm_free - Freeing a block by merging adjacent free blocks and add it to the list
- */
-void mm_free(void *ptr)
-{
-    size_t size = GET_SIZE(AHDP(ptr));
-    PUT_SIZE(AHDP(ptr), PACK(size, 0));
-    PUT_SIZE(AFTP(ptr), PACK(size, 0));
-
-    coalesce((char *)ptr + 2 * PTR_SIZE);    /* delete the adjacent free blocks from list and merge */
-}
-
-/*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
- */
-void *mm_realloc(void *ptr, size_t size)
-{
-    /* special cases */
-    if (ptr == NULL) return mm_malloc(size);
-    if (size == 0) {
-        mm_free(ptr);
-        return NULL;
-    }
-
-    size_t oldsize = GET_SIZE(AHDP(ptr));
-    size_t newsize = ALIGN(size) + 2 * PTR_SIZE;
-    if (oldsize >= newsize) {
-        /* block shrink */
-        return place((char *)ptr + 2 * PTR_SIZE, newsize);
-    }
-    else {
-        /* block expansion, ask for next block first */
-        if (!IS_ALLOC((char *)AFTP(ptr) + HD_SIZE)) {
-            void *nextbp = RIGHT_BLKP((char *)ptr + 2 * PTR_SIZE);
-            size_t temp_size = oldsize + GET_SIZE(FHDP(nextbp));
-            if (temp_size >= newsize) {
-                /* the total block size can hold the required new size */
-                delete_block(nextbp);       /* delete the next block from free list */
-                PUT_SIZE(AHDP(ptr), PACK(temp_size, 0));        /* change size of the header of allocated block */
-                PUT_SIZE(AFTP(ptr), PACK(temp_size, 0));        /* change size of the footer of next free block */
-                return place((char *)ptr + 2 * PTR_SIZE, newsize);
-            }
-        }
-        else if (GET_SIZE((char *)AFTP(ptr) + HD_SIZE) == 0) {
-            /* the next block is epilogue */
-            void *bp;
-            if ((bp = mem_sbrk(newsize - oldsize)) == (void *)(-1))     /* extend heap to hold the remaining bytes */
-                return NULL;
-            PUT_SIZE(AHDP(ptr), PACK(newsize, 1));
-            PUT_SIZE(AFTP(ptr), PACK(newsize, 1));
-            PUT_SIZE((char *)AFTP(ptr) + HD_SIZE, PACK(0, 1));      /* new epilogue */
-            return ptr;
-        }
-    }
-
-    /* otherwise use free and malloc */
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
-
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-      return NULL;
-    copySize = GET_SIZE(AHDP(ptr));
-    if (size < copySize)
-      copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
 
