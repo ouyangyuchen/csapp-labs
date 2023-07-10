@@ -63,6 +63,7 @@ team_t team = {
 #define HD_SIZE (sizeof(size_t))
 #define PTR_SIZE (sizeof(void *))
 #define MIN_BLK_SIZE (2 * HD_SIZE + 2 * PTR_SIZE)
+#define CHUNKSIZE (1 << 12)
 /* operate on the header or footer */
 #define PACK(size, alloc) ((size) | (alloc))
 #define GET_SIZE(p) (*(size_t *)(p) & ~0x7)
@@ -128,6 +129,7 @@ static void delete_block(void *bp);
 static void *find_free(size_t size);
 static void *coalesce(void *bp);
 static void *extend_heap(size_t words);
+static void *place(void *bp, size_t size);
 
 /* 
  * add the free block to the front of free-list,
@@ -226,7 +228,7 @@ static void *coalesce(void *bp) {
  */
 static void *extend_heap(size_t words) {
     char *bp;
-    size_t size = MAX(ALIGN(words), mem_pagesize());    /* align requirement */
+    size_t size = MAX(ALIGN(words), CHUNKSIZE);    /* align requirement */
     
     if ((bp = mem_sbrk(size)) == (void *)(-1))
         return NULL;
@@ -236,6 +238,30 @@ static void *extend_heap(size_t words) {
     PUT_SIZE((char *)AFTP(bp) + HD_SIZE, PACK(0, 1));    /* new epilogue */
     
     return coalesce((char *)bp + 2 * PTR_SIZE);
+}
+
+/* allocate a block with size bytes on the free block bp, and split if possible,
+ * return the block pointer of an allocated block
+ */
+static void *place(void *bp, size_t size) {
+    /* mark the entire free block as allocated */
+    void *header = FHDP(bp);
+    void *footer = FFTP(bp);
+    size_t bsize = GET_SIZE(header);
+    PUT_SIZE(footer, PACK(bsize, 1));
+    PUT_SIZE(header, PACK(bsize, 1));
+
+    if (bsize - size >= MIN_BLK_SIZE) {
+        /* split the free block */
+        PUT_SIZE(header, PACK(size, 1));
+        void *new_footer = FFTP(bp);
+        PUT_SIZE(new_footer, PACK(size, 1));    /* mark the new footer to be allocated */
+        PUT_SIZE((char *)new_footer + HD_SIZE, PACK(bsize - size, 0));
+        PUT_SIZE(footer, PACK(bsize - size, 0));       /* unmark the splitted block footer */
+        /* add the splitted block to free-list */
+        add_to_list((char *)new_footer + 2 * HD_SIZE + 2 * PTR_SIZE);
+    }
+    return (char *)bp - 2 * PTR_SIZE;
 }
 
 /* 
@@ -276,7 +302,7 @@ int mm_init(void)
     PUT_SIZE(epilogue, PACK(0, 1));
 
     /* initialize the free block + add to the free-list */
-    if (extend_heap(mem_pagesize()) == NULL)
+    if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
     return 0;
 }
@@ -299,25 +325,9 @@ void *mm_malloc(size_t size)
         }
     }
     delete_block(bp);       /* remove the block in the list for allocating */
+    bp = place(bp, nsize);
 
-    /* mark the entire free block as allocated */
-    void *header = FHDP(bp);
-    void *footer = FFTP(bp);
-    size_t bsize = GET_SIZE(header);
-    PUT_SIZE(footer, PACK(bsize, 1));
-    PUT_SIZE(header, PACK(bsize, 1));
-
-    if (bsize - nsize >= MIN_BLK_SIZE) {
-        /* split the free block */
-        PUT_SIZE(header, PACK(nsize, 1));
-        void *new_footer = FFTP(bp);
-        PUT_SIZE(new_footer, PACK(nsize, 1));    /* mark the new footer to be allocated */
-        PUT_SIZE((char *)new_footer + HD_SIZE, PACK(bsize - nsize, 0));
-        PUT_SIZE(footer, PACK(bsize - nsize, 0));       /* unmark the splitted block footer */
-        /* add the splitted block to free-list */
-        add_to_list((char *)new_footer + 2 * HD_SIZE + 2 * PTR_SIZE);
-    }
-    return (char *)bp - 2 * PTR_SIZE;
+    return bp;
 }
 
 /*
@@ -337,6 +347,35 @@ void mm_free(void *ptr)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
+    /* special cases */
+    if (ptr == NULL) return mm_malloc(size);
+    if (size == 0) {
+        mm_free(ptr);
+        return NULL;
+    }
+
+    size_t oldsize = GET_SIZE(AHDP(ptr));
+    size_t newsize = ALIGN(size) + 2 * PTR_SIZE;
+    if (oldsize >= newsize) {
+        /* block shrink */
+        return place((char *)ptr + 2 * PTR_SIZE, newsize);
+    }
+    else {
+        /* block expansion, ask for next block first */
+        if (!IS_ALLOC((char *)AFTP(ptr) + HD_SIZE)) {
+            void *nextbp = RIGHT_BLKP((char *)ptr + 2 * PTR_SIZE);
+            size_t temp_size = oldsize + GET_SIZE(FHDP(nextbp));
+            if (temp_size >= newsize) {
+                /* the total block size can hold the required new size */
+                delete_block(nextbp);       /* delete the next block from free list */
+                PUT_SIZE(AHDP(ptr), PACK(temp_size, 0));        /* unmark the header of allocated block */
+                PUT_SIZE(AFTP(ptr), PACK(temp_size, 0));        /* unmark the footer of next free block */
+                return place((char *)ptr + 2 * PTR_SIZE, newsize);
+            }
+        }
+    }
+
+    /* otherwise use free and malloc */
     void *oldptr = ptr;
     void *newptr;
     size_t copySize;
