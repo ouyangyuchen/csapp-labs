@@ -298,25 +298,25 @@ Here are the ideas on how to implement the functions and build a process managem
 In this approach, malloc package uses **segregated double-linked list** to record the current free blocks,
 which adopts the **LIFO finding** rule and **coalesce** principle.
 
-Init:
+- Init:
 Extend heap by calling sbrk().
 Initialize a number of head nodes in the segregated list, all free-lists share the same tail node (tail.prev doesn't matter)
 Initialize prologue and epilogue blocks and mark as allocated (reduce corner cases)
-> NOTE: At init(), the program doesn't ask for more space, the heap extends on demand. (malloc, realloc)
+  > NOTE: The heap extends on demand (malloc, realloc). Therefore, the program doesn't allocate space at here.
 
-Malloc: 
+- Malloc: 
 Find a free block at specific size-list, if not found, go to the next list with larger size,
 If after traversing lists and still fail to find a block to hold the required 'size' data, extend heap for 'size' bytes.
 When the block is found, delete this free block from seglist and place the block (mark as allocated + split)
 
-Free: 
+- Free: 
 Unmark the allocated block + coalesce + add to the corresponding list
 
-Realloc:
-1. new block size < old block size -> shrink the current allocated block by calling place()
-2. new block size >= old block size + the next block on heap is free + the total size satisfy the requirement -> merge the two blocks and place (next expansion strategy)
-3. new block size >= old block size + the next block is epilogue -> extend heap for the exceeded bytes, change size of header and footer
-4. otherwise, simply calling free and malloc for new size
+- Realloc:
+  1. new block size < old block size: shrink the current allocated block by calling place()
+  2. new block size >= old block size + the next block on heap is free + the total size satisfy the requirement: merge the two blocks and place (next expansion strategy)
+  3. new block size >= old block size + the next block is epilogue: extend heap for the exceeded bytes, change size of header and footer
+  4. otherwise, simply calling free and malloc for new size
 
 **block structure**
  ```
