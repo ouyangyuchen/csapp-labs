@@ -320,6 +320,7 @@ Unmark the allocated block + coalesce + add to the corresponding list
 
 **block structure**
  ```
+                                                                bp
 free block     | header: size_t 4 | prev: ptr 4 | next: ptr 4 | payload 8*N-8 | footer size_t 4|
 
                                     bp
