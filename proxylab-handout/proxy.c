@@ -1,0 +1,265 @@
+#include "csapp.h"
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+
+/* Recommended max cache and object sizes */
+#define MAX_CACHE_SIZE 1049000
+#define MAX_OBJECT_SIZE 102400
+#define MAX_HEADERS 10
+
+void doit(int fd);
+void clienterror(int fd, const char *cause, const char *errnum,
+                 const char *shortmsg, const char *longmsg);
+int read_requesthdrs(rio_t *rp, char **headers);
+void free_hdrs(char **headers, int header_num);
+int valid_req(int fd, const char *method, const char *uri, const char *version);
+void parse_uri(const char *uri, char *host, char *port, char *path);
+void send_req(int serverfd, const char *host, const char *path,
+              const char **header, int header_num);
+void fetch_sendback(int clientfd, int serverfd);
+void fetch(int clientfd, int serverfd, const char *uri, const char **headers);
+
+/* You won't lose style points for including this long line in your code */
+static const char *user_agent_hdr =
+    "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 "
+    "Firefox/10.0.3\r\n";
+static const char *conn_hdr = "Connection: close\r\n";
+static const char *proxy_conn_hdr = "Proxy-Connection: close\r\n";
+
+int main(int argc, char *argv[]) {
+  int listenfd, connfd;
+  struct sockaddr_storage clientaddr;
+  socklen_t clientlen;
+
+  /* Read from command line to get the port number */
+  if (argc != 2) {
+    fprintf(stderr, "usage: %s <port>\n", argv[0]);
+    exit(1);
+  }
+  listenfd = Open_listenfd(argv[1]);
+
+  while (1) {
+    clientlen = sizeof(clientaddr);
+    connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
+    doit(connfd);
+    Close(connfd);
+  }
+  return 0;
+}
+
+/* 
+ * Perform a HTTP transaction according to the request from client.
+ * Send the request modified to the server and fetch data back to client.
+ */
+void doit(int clientfd) {
+  rio_t rio;
+  char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+  char *headers[MAX_HEADERS];
+  for (int i = 0; i < MAX_HEADERS; i++) {
+    headers[i] = malloc(MAXLINE);
+    if (headers[i] == NULL)
+      app_error("Not enough heap memory for storing headers\n");
+  }
+
+  Rio_readinitb(&rio, clientfd);
+  Rio_readlineb(&rio, buf, MAXLINE);          // read http request
+  int hdrs = read_requesthdrs(&rio, headers); // read http headers line by line
+
+  /* Parse request to HTTP method, uri, HTTP version */
+  sscanf(buf, "%s %s %s", method, uri, version);
+  if (valid_req(clientfd, method, uri, version)) {
+    free_hdrs(headers, hdrs);
+    return;
+  }
+
+  /* Parse uri to host, port number, path */
+  char host[MAXLINE], port[10], path[MAXLINE];
+  parse_uri(uri, host, port, path);
+  printf("uri: %s\n", uri);
+  printf("Host: %s\n", host);
+  printf("Port: %s\n", port);
+  printf("Path: %s\n\n", path);
+
+  /* Connect the Web server host:port, send the HTTP/1.0 request and headers */
+  int connfd = Open_clientfd(host, port);
+  send_req(connfd, host, path, headers, hdrs);
+  fetch_sendback(clientfd, connfd);
+
+  Close(connfd);
+  free_hdrs(headers, hdrs);
+}
+
+/*
+ * Send GET HTTP/1.0 request and headers to the server.
+ */
+void send_req(int serverfd, const char *host, const char *path,
+              const char **headers, int header_num) {
+  /* send the request */
+  char buf[MAXLINE];
+  sprintf(buf, "GET %s HTTP/1.0\r\n", path);
+  Rio_writen(serverfd, buf, strlen(buf));
+
+  /* send Host header */
+  int host_hd_index = -1;
+  for (int i = 0; i < header_num; i++) {
+    if (strstr(headers[i], "Host: ")) {
+      host_hd_index = i;
+      sprintf(buf, "%s", headers[i]); // use host header from web browser
+      break;
+    }
+  }
+  if (host_hd_index < 0)
+    sprintf(buf, "Host: %s\r\n", host);
+  Rio_writen(serverfd, buf, strlen(buf));
+
+  /* send user-agent header, connection header, proxy-connection header */
+  sprintf(buf, "%s%s%s", user_agent_hdr, conn_hdr, proxy_conn_hdr);
+  Rio_writen(serverfd, buf, strlen(buf));
+
+  /* send the remaining headers */
+  sprintf(buf, "");
+  for (int i = 0; i < header_num; i++) {
+    if (i == host_hd_index)
+      continue;
+    strcat(buf, headers[i]);
+  }
+  if (strlen(buf) > 0)
+    Rio_writen(serverfd, buf, strlen(buf));
+  Rio_writen(serverfd, "\r\n", 2);
+}
+
+/* 
+ * Fetch HTTP response from server, while sending data to client. 
+ */
+void fetch_sendback(int clientfd, int serverfd) {
+  char buf[MAXLINE];
+  rio_t rio;
+  Rio_readinitb(&rio, serverfd);
+
+  Rio_readlineb(&rio, buf, MAXLINE); // response line
+  printf("%s", buf);
+  Rio_writen(clientfd, buf, strlen(buf));
+
+  /* headers */
+  size_t file_size = 0;
+  Rio_readlineb(&rio, buf, MAXLINE);
+  while (strcmp(buf, "\r\n")) {
+    if (strcasestr(buf, "Content-Length: ")) {
+      char *ptr = buf + 16; // point to the address of number
+      sscanf(ptr, "%zu", &file_size);
+    }
+    Rio_writen(clientfd, buf, strlen(buf));
+    Rio_readlineb(&rio, buf, MAXLINE);
+    printf("%s", buf);
+  }
+  Rio_writen(clientfd, "\r\n", 2);
+
+  /* read file contents and send back to client */
+  if (file_size > 0) { // Content-Length header exists
+    char file_data[file_size];
+    Rio_readnb(&rio, file_data, file_size);
+    Rio_writen(clientfd, file_data, file_size);
+  } 
+  else { // No Content-Length header sent from the server
+    int read_len;
+    while ((read_len = Rio_readnb(&rio, buf, MAXLINE)) != 0) { // not EOF!
+      Rio_writen(clientfd, buf, read_len);
+    }
+  }
+}
+
+/*
+ * read the HTTP headers after request line to the buffer.
+ * return the number of headers have been read.
+ */
+int read_requesthdrs(rio_t *rp, char **headers) {
+  char buf[MAXLINE];
+  int lines = 1;
+
+  Rio_readlineb(rp, buf, MAXLINE);
+  while (strcmp(buf, "\r\n")) {
+    strcpy(*headers, buf);
+    headers++;
+    lines++;
+
+    Rio_readlineb(rp, buf, MAXLINE);
+  }
+
+  return lines - 1;
+}
+
+/*
+ * Separate http://ip:port/uri (static file path/dynamic params) from http
+ * request. host = ip, port = port, path = /uri Caller need to allocate enough
+ * space for 3 strings.
+ */
+void parse_uri(const char *uri, char *host, char *port, char *path) {
+  char *ptr, *temp;
+  char *ptr1, *ptr2, *ptr3;
+  ptr1 = strstr(uri, "//");
+  ptr1 += 2;
+  ptr2 = strstr(ptr1, ":");
+  ptr3 = strstr(ptr1, "/");
+
+  int hostlen = (ptr2 == NULL) ? ptr3 - ptr1 : ptr2 - ptr1;
+  strncpy(host, ptr1, hostlen);
+
+  if (ptr2 == NULL)
+    strcpy(port, "80");
+  else
+    strncpy(port, ptr2 + 1, ptr3 - ptr2 - 1);
+
+  strncpy(path, ptr3, MAXLINE);
+}
+
+/*
+ * send the error message back to the connected socket
+ */
+void clienterror(int fd, const char *cause, const char *errnum,
+                 const char *shortmsg, const char *longmsg) {
+  char buf[MAXLINE], body[MAXLINE];
+
+  sprintf(body, "<html><title>Proxy Error</title>");
+  sprintf(body, "%s<body bgcolor=" "ffffff" ">\r\n", body);
+  sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
+  sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
+  sprintf(body, "%s<hr><em>The Tiny Proxy</em>\r\n", body);
+  int body_size = strlen(body);
+
+  sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
+  Rio_writen(fd, buf, strlen(buf));
+  sprintf(buf, "Content-type: text/html\r\n");
+  Rio_writen(fd, buf, strlen(buf));
+  sprintf(buf, "Content-length: %d\r\n\r\n", body_size);
+  Rio_writen(fd, buf, strlen(buf));
+  Rio_writen(fd, body, body_size);
+}
+
+/*
+ * Parse the HTTP request, return 0 if valid, 1 if non-valid.
+ */
+int valid_req(int fd, const char *method, const char *uri,
+              const char *version) {
+  if (strcasecmp(method, "GET")) {
+    clienterror(fd, method, "501", "Not implemented",
+                "The proxy doesn't support this method");
+    return 1;
+  }
+  if (!strcasestr(version, "HTTP/1.")) {
+    return 1;
+  }
+  return 0;
+}
+
+/*
+ * free the buffer to store headers.
+ */
+void free_hdrs(char **headers, int header_num) {
+  for (int i = 0; i < header_num; i++) {
+    free(headers[i]);
+  }
+}
