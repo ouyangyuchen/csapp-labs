@@ -37,6 +37,10 @@ static const char *proxy_conn_hdr = "Proxy-Connection: close\r\n";
 
 sbuf_t sbuf; /* shared connection fd buffer */
 
+int readcnt;
+sem_t mutex; /* protection for readcnt */
+sem_t w;     /* permission to write to cache */
+
 int main(int argc, char *argv[]) {
   int listenfd, connfd;
   struct sockaddr_storage clientaddr;
@@ -48,6 +52,10 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
   listenfd = Open_listenfd(argv[1]);
+
+  readcnt = 0;
+  Sem_init(&mutex, 0, 1);
+  Sem_init(&w, 0, 1);
 
   sbuf_init(&sbuf, SBUFSIZE);
   pthread_t tid;
@@ -100,12 +108,28 @@ void doit(int clientfd) {
 
   char response_buf[MAX_CACHE_SIZE];
   char *tempbuf;
+
+  P(&mutex);
+  if (++readcnt == 1)
+    P(&w); // lock wrting for next readers
+  V(&mutex);
+
   size_t read_size = fetch_cache(uri, &tempbuf);
   if (tempbuf) {
     /* read response directly from cache */
     strncpy(response_buf, tempbuf, read_size);
+    
+    P(&mutex);
+    if (--readcnt == 0)
+      V(&w); // unlock writing for caching case
+    V(&mutex);
   }
   else {
+    P(&mutex);
+    if (--readcnt == 0)
+      V(&w); // unlock writing to non-caching case
+    V(&mutex);
+
     /* Parse uri to host, port number, path */
     char host[MAXLINE], port[10], path[MAXLINE];
     parse_uri(uri, host, port, path);
@@ -123,8 +147,11 @@ void doit(int clientfd) {
     Close(connfd);
 
     /* If data size < MAX_OBJECT_SIZE, add object to the cache */
-    if (read_size <= MAX_OBJECT_SIZE)
+    if (read_size <= MAX_OBJECT_SIZE) {
+      P(&w); // require writing permission
       add_to_cache(uri, response_buf, read_size);
+      V(&w); // unlock writing
+    }
   }
   /* Send the data in memory to client */
   resend(clientfd, response_buf, read_size);
@@ -191,18 +218,23 @@ void resend(int clientfd, char *buf, size_t size) {
  */
 int read_requesthdrs(rio_t *rp, char **headers) {
   char buf[MAXLINE];
-  int lines = 1;
+  int lines = 0;
 
   Rio_readlineb(rp, buf, MAXLINE);
   while (strcmp(buf, "\r\n")) {
-    strcpy(*headers, buf);
+    strncpy(*headers, buf, MAXLINE);
     headers++;
     lines++;
+    if (lines == MAX_LINES - 1) {
+      strcpy(*headers, "\r\n");
+      printf("Truncate headers from client.\n");
+      break;
+    }
 
     Rio_readlineb(rp, buf, MAXLINE);
   }
 
-  return lines - 1;
+  return lines;
 }
 
 /*
@@ -211,7 +243,6 @@ int read_requesthdrs(rio_t *rp, char **headers) {
  * space for 3 strings.
  */
 void parse_uri(const char *uri, char *host, char *port, char *path) {
-  char *ptr, *temp;
   char *ptr1, *ptr2, *ptr3;
   ptr1 = strstr(uri, "//");
   ptr1 += 2;

@@ -9,7 +9,9 @@ static line_t *find_line(const char *uri);
 static void remove_line(line_t *target_line, int is_free);
 static int insert_line(line_t *curr_line);
 
-/* Initialize the cache with 0 line. */
+/* 
+ * Initialize the cache with 0 line.
+ */
 void cache_init() {
   cache.head = Malloc(sizeof(line_t));
   cache.head->file_data = NULL;
@@ -29,15 +31,6 @@ void cache_init() {
   cache.num = 0;
 }
 
-/* TODO
- * Fetch data from cache
- * if uri matched a line -> return the file
- * else -> fetch data from web server
- *   if the file-length is too large -> not insert
- *   else -> insert to the head of cache.
- *     if num > MAXLINES -> remove the last line
- * return the file/data pointer*/
-
 /* 
  * Fetch response from cache. 
  * Return the size of response data.
@@ -45,8 +38,8 @@ void cache_init() {
 size_t fetch_cache(const char *uri, char **datap) {
   line_t *target = find_line(uri);
   if (target) {
-    remove_line(target, 0);
-    insert_line(target);
+    // remove_line(target, 0);
+    // insert_line(target);
     *datap = target->file_data;
     return target->size;
   } 
@@ -56,7 +49,9 @@ size_t fetch_cache(const char *uri, char **datap) {
   }
 }
 
-/* Add the uri and corresponding response data to cache. */
+/* 
+ * Add the uri and corresponding response data to cache.
+ */
 int add_to_cache(const char *uri, const char *data, size_t size) {
   if (size > MAX_OBJECT_SIZE)
     return -1;
