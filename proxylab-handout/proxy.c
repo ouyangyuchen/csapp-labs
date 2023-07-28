@@ -1,4 +1,6 @@
 #include "csapp.h"
+#include "sbuf.h"
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,8 +11,14 @@
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
-#define MAX_HEADERS 10
 
+#define MAX_HEADERS 10 /* max number of headers in a HTTP request */
+
+#define MAX_THREADS 4 /* max number of threads in the poll */
+
+#define SBUFSIZE 16 /* number of fd contained in the shared buffer */
+
+void *thread(void *vargp);
 void doit(int fd);
 void clienterror(int fd, const char *cause, const char *errnum,
                  const char *shortmsg, const char *longmsg);
@@ -30,6 +38,8 @@ static const char *user_agent_hdr =
 static const char *conn_hdr = "Connection: close\r\n";
 static const char *proxy_conn_hdr = "Proxy-Connection: close\r\n";
 
+sbuf_t sbuf; /* shared connection fd buffer */
+
 int main(int argc, char *argv[]) {
   int listenfd, connfd;
   struct sockaddr_storage clientaddr;
@@ -42,13 +52,27 @@ int main(int argc, char *argv[]) {
   }
   listenfd = Open_listenfd(argv[1]);
 
+  sbuf_init(&sbuf, SBUFSIZE);
+  pthread_t tid;
+  for (int i = 0; i < MAX_THREADS; i++) {
+    Pthread_create(&tid, NULL, thread, NULL); // create thread pool
+  }
+
   while (1) {
     clientlen = sizeof(clientaddr);
     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
+    sbuf_insert(&sbuf, connfd); // insert the client to sbuf
+  }
+  return 0;
+}
+
+void *thread(void *vargp) {
+  Pthread_detach(Pthread_self()); // detach itself
+  while (1) {
+    int connfd = sbuf_remove(&sbuf); // retrieve a client from sbuf
     doit(connfd);
     Close(connfd);
   }
-  return 0;
 }
 
 /* 
