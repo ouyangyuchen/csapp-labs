@@ -1,5 +1,6 @@
 #include "csapp.h"
 #include "sbuf.h"
+#include "cache.h"
 #include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -7,10 +8,6 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
-
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
 
 #define MAX_HEADERS 10 /* max number of headers in a HTTP request */
 
@@ -28,8 +25,8 @@ int valid_req(int fd, const char *method, const char *uri, const char *version);
 void parse_uri(const char *uri, char *host, char *port, char *path);
 void send_req(int serverfd, const char *host, const char *path,
               const char **header, int header_num);
-void fetch_sendback(int clientfd, int serverfd);
-void fetch(int clientfd, int serverfd, const char *uri, const char **headers);
+size_t fetch_server(int serverfd, char *buf);
+void resend(int clientfd, char *buf, size_t size);
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr =
@@ -93,27 +90,36 @@ void doit(int clientfd) {
   Rio_readlineb(&rio, buf, MAXLINE);          // read http request
   int hdrs = read_requesthdrs(&rio, headers); // read http headers line by line
 
-  /* Parse request to HTTP method, uri, HTTP version */
-  sscanf(buf, "%s %s %s", method, uri, version);
-  if (valid_req(clientfd, method, uri, version)) {
-    free_hdrs(headers, hdrs);
-    return;
+  char response_buf[MAX_CACHE_SIZE];
+  char *tempbuf = fetch_cache(uri);
+  if (tempbuf) {
+    /* read response directly from cache */
+    
   }
+  else {
+    /* Parse request to HTTP method, uri, HTTP version */
+    sscanf(buf, "%s %s %s", method, uri, version);
+    if (valid_req(clientfd, method, uri, version)) {
+      free_hdrs(headers, hdrs);
+      return;
+    }
 
-  /* Parse uri to host, port number, path */
-  char host[MAXLINE], port[10], path[MAXLINE];
-  parse_uri(uri, host, port, path);
-  printf("uri: %s\n", uri);
-  printf("Host: %s\n", host);
-  printf("Port: %s\n", port);
-  printf("Path: %s\n\n", path);
+    /* Parse uri to host, port number, path */
+    char host[MAXLINE], port[10], path[MAXLINE];
+    parse_uri(uri, host, port, path);
+    printf("uri: %s\n", uri);
+    printf("Host: %s\n", host);
+    printf("Port: %s\n", port);
+    printf("Path: %s\n\n", path);
 
-  /* Connect the Web server host:port, send the HTTP/1.0 request and headers */
-  int connfd = Open_clientfd(host, port);
-  send_req(connfd, host, path, headers, hdrs);
-  fetch_sendback(clientfd, connfd);
+    /* Connect the Web server host:port, send the HTTP/1.0 request and headers */
+    int connfd = Open_clientfd(host, port);
+    send_req(connfd, host, path, headers, hdrs);
+    size_t read_size = fetch_server(connfd, response_buf);
+    resend(clientfd, response_buf, read_size);
 
-  Close(connfd);
+    Close(connfd);
+  }
   free_hdrs(headers, hdrs);
 }
 
@@ -156,44 +162,18 @@ void send_req(int serverfd, const char *host, const char *path,
   Rio_writen(serverfd, "\r\n", 2);
 }
 
-/* 
- * Fetch HTTP response from server, while sending data to client. 
- */
-void fetch_sendback(int clientfd, int serverfd) {
-  char buf[MAXLINE];
+size_t fetch_server(int serverfd, char *buf) {
   rio_t rio;
   Rio_readinitb(&rio, serverfd);
 
-  Rio_readlineb(&rio, buf, MAXLINE); // response line
-  printf("%s", buf);
-  Rio_writen(clientfd, buf, strlen(buf));
+  size_t num = Rio_readnb(&rio, buf, MAX_CACHE_SIZE);
+  if (num == 0)
+    printf("Truncate the response.\n");
+  return num;
+}
 
-  /* headers */
-  size_t file_size = 0;
-  Rio_readlineb(&rio, buf, MAXLINE);
-  while (strcmp(buf, "\r\n")) {
-    if (strcasestr(buf, "Content-Length: ")) {
-      char *ptr = buf + 16; // point to the address of number
-      sscanf(ptr, "%zu", &file_size);
-    }
-    Rio_writen(clientfd, buf, strlen(buf));
-    Rio_readlineb(&rio, buf, MAXLINE);
-    printf("%s", buf);
-  }
-  Rio_writen(clientfd, "\r\n", 2);
-
-  /* read file contents and send back to client */
-  if (file_size > 0) { // Content-Length header exists
-    char file_data[file_size];
-    Rio_readnb(&rio, file_data, file_size);
-    Rio_writen(clientfd, file_data, file_size);
-  } 
-  else { // No Content-Length header sent from the server
-    int read_len;
-    while ((read_len = Rio_readnb(&rio, buf, MAXLINE)) != 0) { // not EOF!
-      Rio_writen(clientfd, buf, read_len);
-    }
-  }
+void resend(int clientfd, char *buf, size_t size) {
+  Rio_writen(clientfd, buf, size);
 }
 
 /*
