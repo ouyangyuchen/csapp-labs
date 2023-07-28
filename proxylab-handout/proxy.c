@@ -55,6 +55,8 @@ int main(int argc, char *argv[]) {
     Pthread_create(&tid, NULL, thread, NULL); // create thread pool
   }
 
+  cache_init();
+
   while (1) {
     clientlen = sizeof(clientaddr);
     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
@@ -90,20 +92,20 @@ void doit(int clientfd) {
   Rio_readlineb(&rio, buf, MAXLINE);          // read http request
   int hdrs = read_requesthdrs(&rio, headers); // read http headers line by line
 
+  sscanf(buf, "%s %s %s", method, uri, version);
+  if (valid_req(clientfd, method, uri, version)) {
+    free_hdrs(headers, hdrs);
+    return;
+  }
+
   char response_buf[MAX_CACHE_SIZE];
-  char *tempbuf = fetch_cache(uri);
+  char *tempbuf;
+  size_t read_size = fetch_cache(uri, &tempbuf);
   if (tempbuf) {
     /* read response directly from cache */
-    
+    strncpy(response_buf, tempbuf, read_size);
   }
   else {
-    /* Parse request to HTTP method, uri, HTTP version */
-    sscanf(buf, "%s %s %s", method, uri, version);
-    if (valid_req(clientfd, method, uri, version)) {
-      free_hdrs(headers, hdrs);
-      return;
-    }
-
     /* Parse uri to host, port number, path */
     char host[MAXLINE], port[10], path[MAXLINE];
     parse_uri(uri, host, port, path);
@@ -115,11 +117,18 @@ void doit(int clientfd) {
     /* Connect the Web server host:port, send the HTTP/1.0 request and headers */
     int connfd = Open_clientfd(host, port);
     send_req(connfd, host, path, headers, hdrs);
-    size_t read_size = fetch_server(connfd, response_buf);
-    resend(clientfd, response_buf, read_size);
 
+    /* Retrieve data from server */
+    read_size = fetch_server(connfd, response_buf);
     Close(connfd);
+
+    /* If data size < MAX_OBJECT_SIZE, add object to the cache */
+    if (read_size <= MAX_OBJECT_SIZE)
+      add_to_cache(uri, response_buf, read_size);
   }
+  /* Send the data in memory to client */
+  resend(clientfd, response_buf, read_size);
+
   free_hdrs(headers, hdrs);
 }
 

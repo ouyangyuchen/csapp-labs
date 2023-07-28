@@ -13,9 +13,10 @@
 #define MAX_LINES 8
 
 typedef struct line {
-  char *file_data;
   struct line *prev;
   struct line *next;
+  char *file_data;
+  size_t size;
   char uri_tag[MAXLINE];
 } line_t;
 
@@ -28,7 +29,7 @@ typedef struct {
 
 void cache_init();
 
-char *fetch_cache(const char *uri);
+size_t fetch_cache(const char *uri, char **datap);
 
 int add_to_cache(const char *uri, const char *data, size_t size);
 

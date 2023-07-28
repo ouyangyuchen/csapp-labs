@@ -14,10 +14,12 @@ void cache_init() {
   cache.head = Malloc(sizeof(line_t));
   cache.head->file_data = NULL;
   sprintf(cache.head->uri_tag, "");
+  cache.head->size = 0;
 
   cache.tail = Malloc(sizeof(line_t));
   cache.tail->file_data = NULL;
   sprintf(cache.tail->uri_tag, "");
+  cache.tail->size = 0;
 
   cache.head->prev = NULL;
   cache.head->next = cache.tail;
@@ -38,17 +40,19 @@ void cache_init() {
 
 /* 
  * Fetch response from cache. 
- * Return the data if the request exists, else return NULL.
+ * Return the size of response data.
  */
-char *fetch_cache(const char *uri) {
+size_t fetch_cache(const char *uri, char **datap) {
   line_t *target = find_line(uri);
   if (target) {
     remove_line(target, 0);
     insert_line(target);
-    return target->file_data;
+    *datap = target->file_data;
+    return target->size;
   } 
   else {
-    return NULL;
+    *datap = NULL;
+    return 0;
   }
 }
 
@@ -58,6 +62,7 @@ int add_to_cache(const char *uri, const char *data, size_t size) {
     return -1;
 
   line_t *newline = Malloc(sizeof(line_t));
+  newline->size = size;
   newline->file_data = Malloc(MAX_OBJECT_SIZE);
   strncpy(newline->uri_tag, uri, MAXLINE);
   strncpy(newline->file_data, data, size);
