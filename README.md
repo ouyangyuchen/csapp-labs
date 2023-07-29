@@ -1,4 +1,4 @@
-# cmu 15-213
+# csapp labs
 Programming labs and resources at cmu 15-213, finished in my self-study.
 ## About this course
 - *tags*: **computer architecture**, **computer system**, **C**, **assembly language**
