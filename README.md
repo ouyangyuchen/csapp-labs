@@ -18,7 +18,7 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
 
 ## Labs
 *Some notes for each lab.*
-### Data lab
+## Data lab
 > How to operate integers and floating points in the bit-level? 
 
 **howManyBits**
@@ -26,19 +26,19 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
 - `int howManyBits(int x)`: return the minimum number of bits required to represent x in two's complement.
     - key: remove redundant sign bits at head, find the first appearance position of 1, **binary search + conditional shift**
 
-### Bomb lab
+## Bomb lab
 > Understand programs in the machine-level.
 
 `./bomb/strs` *is my answer*
 
-**phase 1-4**
+### phase 1-4
 
 1. be familiar with gdb commands
 2. if-else, while loop
 3. switch, jump-table
 4. recursive function, shift
 
-**phase 5**
+### phase 5
 
 1. check the length of input string.
 
@@ -54,7 +54,7 @@ for (int i = 0; i < 6; i++) {
 ```
 3. string match test
 
-**phase 6**
+### phase 6
 
 1. input string to 6 numbers, which must be in [1, 6] and unique.
 2. number = 7 - number
@@ -94,10 +94,10 @@ for (int i = 5; i > 0; i--) {
 }
 ```
 
-### Attack lab
+## Attack lab
 > Be careful about buffer overflow with rough memory writing.
 
-#### Part 1: Code Injection Attacks
+### Part 1: Code Injection Attacks
 
 input string = commands in bytes code + filled bytes + address of the commands
 
@@ -106,7 +106,7 @@ input string = commands in bytes code + filled bytes + address of the commands
 |2   |move cookie to `%rdi`, push `&&touch2`, return|
 |3| recover memory on stack (avoid being overwritten in `hexmatch()`), move &str to `%rdi`, push `&&touch3`, return
 
-#### Part 2: Return-Oriented Programming
+### Part 2: Return-Oriented Programming
 
 The stack has uncertain address and is non-executable. Therefore, we are unable to overwrite the address of command string.
 However, the address of text/code is fixed. We can look into the machine code representation of functions, and extract valid parts of commands before return.
@@ -162,10 +162,10 @@ mov %rax, %rdi              setval_426
  #pop operations = 8 (#instructions) + 1 (pop %rax) = 9.
 
 
-### Cache lab
+## Cache lab
 > Optimize performance with undertandings of memory hierarchy.
 
-#### Part A: Writing a Cache Simulator
+### Part A: Writing a Cache Simulator
 
 1. parse the command line arguments using `getopt` function
 For example, we have
@@ -204,7 +204,7 @@ while ((opt = getopt(argc, argv, "hvs:E:b:t:")) != -1) {
 - LRU (least-recently used) policy corresponds to the order in the linked-list. The most recently used block can be always placed in the head.
 - Remove the tail node when the number of blocks is larger than E.
 
-#### Part B: Optimizing Matrix Transpose
+### Part B: Optimizing Matrix Transpose
 
 cache: $s = 5, E = 1, b = 5$
 32 bytes per line = 8 ints per line
@@ -246,7 +246,7 @@ Because of 8 ints in a set of cache, it is not efficient enough to use just bloc
 *basic idea*: directly apply 8x8 blocks transpose
 *misses*: 1994 < 2000
 
-### Shell lab
+## Shell lab
 > Understand exception control flow by building a tiny shell.
 
 A *shell* is an interactive command-line interpreter that runs programs on behalf of the user.
@@ -292,7 +292,7 @@ Here are the ideas on how to implement the functions and build a process managem
   But we cannot determine the order of `sigchld_handler` and `wait_fg`, so the target job may be NULL (if handler comes first) or until `job.state != FG` (we get the job pointer first, but need to wait for the state change).
 - `sigint_handler` and `sigtstp_handler`: catch the `SIGINT` or `SIGTSTP` signal from keyboard (\<Ctrl-c\> or \<Ctrl-z\>), and **pass the corresponding signal to the fg process group**.
 
-### Malloc Lab
+## Malloc Lab
 > Implement a dynamic memory allocator with high utility and throughput.
 
 In this approach, malloc package uses **segregated double-linked list** to record the current free blocks,
@@ -340,12 +340,12 @@ where `8*N` is the alignment of space that user wants to allocate.
 [8]     >= 2^12
 ```
 
-### Proxy Lab
+## Proxy Lab
 > Build a tiny concurrent proxy with caches.
 
 The proxy receives a positive integer from command line, use it as listening port to perform on all requests.
 
-#### Part I
+### Part I: Implementing a sequential web proxy
 It's easy to build a sequential proxy based on the Tiny Server from textbook.
 
 *basic idea*: The main thread parses the connection request, fetches response from the Web server and resends it back to client.
@@ -357,14 +357,14 @@ In part I, the core problem is to parse the request and headers successfuly:
 4. Connect to the server based on hostname and port.
 5. Rebuild the HTTP request `GET $PATH HTTP/1.0` and other important headers. Send them to the server socket.
 
-#### Part II  
+### Part II: Dealing with multiple concurrent requests
 The proxy uses **shared buffer** (`sbuf.h`, `sbuf.c`) and **prethreading** from textbook.
 
 *main thread*: accept all connections from the listening port and add the fd to buffer.
 
 *other threads*: get a fd from the buffer and perform all operations in part I.
 
-#### Part III
+### Part III: Caching web objects
 The cache (see `cache.h`, `cache.c`) uses a doubly-linked list to manage multiple lines:
 ```c
 typedef struct line {
