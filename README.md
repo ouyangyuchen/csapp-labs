@@ -340,3 +340,61 @@ where `8*N` is the alignment of space that user wants to allocate.
 [8]     >= 2^12
 ```
 
+### Proxy Lab
+> Build a tiny concurrent proxy with caches.
+
+The proxy receives a positive integer from command line, use it as listening port to perform on all requests.
+
+#### Part I
+It's easy to build a sequential proxy based on the Tiny Server from textbook.
+
+*basic idea*: The main thread parses the connection request, fetches response from the Web server and resends it back to client.
+
+In part I, the core problem is to parse the request and headers successfuly:
+1. Read the first line as HTTP request `$METHOD $URI HTTP/$VERSION`. Validate the method and version.
+2. Parse the URI `http://hostname:port/path` to hostname, port number and path. If no explicit port exists, use 80 as port number.
+3. Read the remaining lines as headers until `'\r\n'`.
+4. Connect to the server based on hostname and port.
+5. Rebuild the HTTP request `GET $PATH HTTP/1.0` and other important headers. Send them to the server socket.
+
+#### Part II  
+The proxy uses **shared buffer** (`sbuf.h`, `sbuf.c`) and **prethreading** from textbook.
+
+*main thread*: accept all connections from the listening port and add the fd to buffer.
+
+*other threads*: get a fd from the buffer and perform all operations in part I.
+
+#### Part III
+The cache (see `cache.h`, `cache.c`) uses a doubly-linked list to manage multiple lines:
+```c
+typedef struct line {
+    char *uri; // tag to identify the content
+    char *data; // entire response from the server last time
+    size_t size; // the size of data
+    struct line *prev, *next; // pointers to the other line
+}
+```
+
+Some clients fetch responses that have been cached (case 1), so that they only call **const methods** which are thread-safe for no writing to the cache structure.
+
+On the contrary, the others will update the internal structure of cache lines by calling **non-const methods**, which means the lines they request haven't been cached (case 2).
+
+> How to synchronize?
+
+According to the relationship between requests and reading roles, we use the **first readers-writers mechanism** (multiple readers but only one writer can access the cache) to synchronize and protect the shared cache from multiple threads.
+- case 1: pure reader
+  - lock before finding the line from buffer successfully, unlock after **copying the data to private local buffer**. 
+- case 2: partially reader + writer 
+  - lock before finding the line it wants, and unlock after failing (as reader). 
+  - lock before adding the data to cache and unlock after finishing adding (as real writer).
+
+> How to determine the eviction policy?
+
+If we use the strict LRU policy. Every read and write operation will update the order of lines:
+- read: rearrange the line to the head of list.
+- write: create a new line and insert into the head.
+
+So there is no const method for multiple readers to be served simultaneously.
+
+Instead, we use an approximate LRU policy that **don't update the order in reading operation and leave the line untouched.**
+Therefore, the `find_line` method is safe for interleaves by multiple threads.
