@@ -60,7 +60,7 @@ int add_to_cache(const char *uri, const char *data, size_t size) {
   newline->size = size;
   newline->file_data = Malloc(MAX_OBJECT_SIZE);
   strncpy(newline->uri_tag, uri, MAXLINE);
-  strncpy(newline->file_data, data, size);
+  memcpy(newline->file_data, data, size);
 
   insert_line(newline);
   return 0;

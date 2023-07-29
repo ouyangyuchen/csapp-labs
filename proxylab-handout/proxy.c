@@ -117,7 +117,7 @@ void doit(int clientfd) {
   size_t read_size = fetch_cache(uri, &tempbuf);
   if (tempbuf) {
     /* read response directly from cache */
-    strncpy(response_buf, tempbuf, read_size);
+    memcpy(response_buf, tempbuf, read_size);
     
     P(&mutex);
     if (--readcnt == 0)
