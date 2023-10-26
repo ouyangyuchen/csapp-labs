@@ -2,9 +2,9 @@
 Programming labs and resources at cmu 15-213, finished in my self-study.
 ## About this course
 - *tags*: **computer architecture**, **computer system**, **C**, **assembly language**
-- *study time*: 2023 Summer
+- *study semester*: 2015 Fall
 - *course homepage*: [15-213 Introduction to Computer Systems](https://www.cs.cmu.edu/~213/)
-- *Textbook*: CS:APP3e
+- *Textbook*: Computer Systems:A Programmer's Perspective (3rd edition)
 
 ## Useful links
 - Course Videos
