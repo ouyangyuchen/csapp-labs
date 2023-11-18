@@ -16,7 +16,7 @@ Programming labs and resources at cmu 15-213, finished in my self-study.
    -  [Cheat Sheet](http://csapp.cs.cmu.edu/3e/docs/gdbnotes-x86-64.pdf)
 - [Norman Matloff's Unix and Linux Tutorial Center](https://heather.cs.ucdavis.edu/~matloff/unix.html)
 
-## Notes for Labs
+# Notes for Labs
 ## Data lab
 > How to operate integers and floating points in the bit-level? 
 
